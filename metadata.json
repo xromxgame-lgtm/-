@@ -1,0 +1,6 @@
+{
+  "name": "РобоШкола",
+  "description": "Интерактивный ИИ-помощник с геймификацией для учёбы и выполнения ДЗ с 1 по 11 класс",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

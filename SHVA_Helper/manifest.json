@@ -1,70 +1,70 @@
 {
-  "version": "2.8.9-bootstrap-test",
-  "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/bootstrap-2.8.9/SHVA_Helper.lua",
-  "sha256": "69d1b45f5f697f4c2c31d4a3682b9861a3f02b2ccb688461f2dd10e4bd934cc9",
-  "bundleVersion": "2.9.0-embedded-beta",
+  "version": "2.8.10-bootstrap-test",
+  "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/bootstrap-2.8.10/SHVA_Helper.lua",
+  "sha256": "145ba7a328b1b9e6619532494a64bab5ef5492a2ae918c446b3a498e9eeddf40",
+  "bundleVersion": "2.9.1-embedded-beta",
   "files": [
     {
       "path": "Cripto_Shewa/assets/space_city.png",
-      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.0/Cripto_Shewa/assets/space_city.png",
+      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.1/Cripto_Shewa/assets/space_city.png",
       "size": 2651456,
       "sha256": "6c3b7795d9b39575d220a0462ebc1177cf32414b9d81e0fd43ec67d54a76de42"
     },
     {
       "path": "Cripto_Shewa/module_host.lua",
-      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.0/Cripto_Shewa/module_host.lua",
-      "size": 14033,
-      "sha256": "57c45d425f5afb9dbf5142db5a5538ae285c2ea7b83cd860d87e622d4d5fc204"
+      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.1/Cripto_Shewa/module_host.lua",
+      "size": 14037,
+      "sha256": "349a5b770f4cceb5897b784af995cee678d100828b0b7da1b9279df67d276b92"
     },
     {
       "path": "Cripto_Shewa/modules/auto-spawn.lua",
-      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.0/Cripto_Shewa/modules/auto-spawn.lua",
-      "size": 15552,
-      "sha256": "a9a7349aa314e4e1ae6704f98ba8bbab5fe62c2fc8bd1293c1f5e4812bce0d40"
+      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.1/Cripto_Shewa/modules/auto-spawn.lua",
+      "size": 15555,
+      "sha256": "e365e5dada7ba5c834138e76c02e6f8d93d15f26dcec31d0df5ccaac78638286"
     },
     {
       "path": "Cripto_Shewa/modules/battlepass-helper.lua",
-      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.0/Cripto_Shewa/modules/battlepass-helper.lua",
-      "size": 54882,
-      "sha256": "8adf7ad69a03d24987966e79922c6aeb73c377aaa2498b358f0a966cbad139fe"
+      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.1/Cripto_Shewa/modules/battlepass-helper.lua",
+      "size": 54887,
+      "sha256": "7ca64024ac6f8aafbf2ad37c293074e82b5be447828be5f3e4e5d9658681c427"
     },
     {
       "path": "Cripto_Shewa/modules/case-opener.lua",
-      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.0/Cripto_Shewa/modules/case-opener.lua",
-      "size": 92489,
-      "sha256": "4cfecd6b661f7d926c5da6faf99de1c3ff58214684f1f1938a322a70272f70bc"
+      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.1/Cripto_Shewa/modules/case-opener.lua",
+      "size": 92496,
+      "sha256": "19d9f3373d1b534ae4950822c45203d262489fa78166a329bca2c3d2ad517874"
     },
     {
       "path": "Cripto_Shewa/modules/craft-counter.lua",
-      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.0/Cripto_Shewa/modules/craft-counter.lua",
-      "size": 28288,
-      "sha256": "a9571d70c8e23738be3285bbe4fc0f057988ae3527bf74a0ade8155782bd0116"
+      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.1/Cripto_Shewa/modules/craft-counter.lua",
+      "size": 28295,
+      "sha256": "8dd511f42558d336b250fc89bebe86e22b531bd62496d6830e2622136224dfce"
     },
     {
       "path": "Cripto_Shewa/modules/crypto-collector.lua",
-      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.0/Cripto_Shewa/modules/crypto-collector.lua",
-      "size": 93045,
-      "sha256": "4cffa161f4ed8ce314228a38f68ca7452da3f0c7d7cf2a9cd49272ea91a9f19c"
+      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.1/Cripto_Shewa/modules/crypto-collector.lua",
+      "size": 93066,
+      "sha256": "d648ee038c2532b80398f6c1b908e4d3a52e0d4b25adbac498fb3635aec7199f"
     },
     {
       "path": "Cripto_Shewa/modules/dialog-plus.lua",
-      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.0/Cripto_Shewa/modules/dialog-plus.lua",
-      "size": 12873,
-      "sha256": "175d53b2ad2bbeceb2aac13215519ad2eb0e3acfa126aed34fbbf875b5d77315"
+      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.1/Cripto_Shewa/modules/dialog-plus.lua",
+      "size": 12876,
+      "sha256": "239e464378852a7c3a9557ffa22cfdb0f0167dcf3dbde92d7c8ba97945d71cf8"
     },
     {
       "path": "Cripto_Shewa/modules/inventory-plus.lua",
-      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.0/Cripto_Shewa/modules/inventory-plus.lua",
-      "size": 49996,
-      "sha256": "a42dafc4a40a999e70cc51d26e8051ed8d33f4ccd33c39f5889cc624237e668e"
+      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.1/Cripto_Shewa/modules/inventory-plus.lua",
+      "size": 50003,
+      "sha256": "e159088fd82eda271525c517e039b8b301310afba2dea977053179e7a8472a8c"
     },
     {
       "path": "SHVA_Helper.lua",
-      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.0/SHVA_Helper.lua",
-      "size": 69767,
-      "sha256": "b686456d8ba65ea851dbb8cf806fcfb130fccfcc5b805beee4e234708f0f5094"
+      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.1/SHVA_Helper.lua",
+      "size": 69789,
+      "sha256": "e5547f99b495a84da9e293919df54393f5c384a3f20b5e8f21a3785bf5aac349"
     }
   ],
   "channel": "test",
-  "notes": "Тестовый выпуск. Старые обновляторы: установить переходный файл, перезапустить игру, затем обновить полный комплект до 2.9 и снова перезапустить."
+  "notes": "Тестовый выпуск SHEVA_Helper 2.9.1: исправлено видимое название; внутренние пути сохранены. Старые обновляторы используют переходную 2.8.10, затем полный комплект."
 }

@@ -1,0 +1,795 @@
+script_name('Craft Counter')
+script_author('ArzHub')
+-- SHVA_Helper integration: chat branding and violet/cyan visual theme; original authorship retained.
+script_version('1.5.0')
+script_url('https://arzhub.top/hub/craft-counter')
+
+-- Forum topic (current version, discussion): https://www.blast.hk/threads/246012/
+
+local moonloader = require('moonloader')  -- download_status for the update check.
+local imgui = require('mimgui')
+local ffi = require('ffi')
+local encoding = require('encoding')
+local hook = require('lib.samp.events')
+encoding.default = 'UTF-8'
+local cyr = encoding.CP1251
+
+-- arzhub-theme:begin
+-- ArzHub palette (arzhub.top) and the mimgui style built from it; every ArzHub script carries this same block.
+local theme = {}
+do
+    local function rgb(hex, a)
+        return imgui.ImVec4(tonumber(hex:sub(1, 2), 16) / 255, tonumber(hex:sub(3, 4), 16) / 255,
+            tonumber(hex:sub(5, 6), 16) / 255, a or 1)
+    end
+    local function white(a) return imgui.ImVec4(1, 1, 1, a) end
+
+    theme.rgb = rgb
+    theme.bg = rgb('100c1e')         -- title bar, overlay background.
+    theme.surface = rgb('1b142b')    -- window background.
+    theme.text = rgb('f2f2f2')
+    theme.text2 = rgb('bdbdbd')      -- secondary text.
+    theme.muted = rgb('9a9a9a')      -- hints and captions.
+    theme.line = white(0.12)         -- borders and separators.
+    theme.accent = rgb('bb7aff')
+    theme.accentLight = rgb('d3a6ff')
+    theme.accentSoft = rgb('73e6ef') -- text on an accent tint.
+    theme.accentTint = rgb('bb7aff', 0.16)
+    theme.ok = rgb('60ca5d')
+    theme.warn = rgb('d9b45c')
+    theme.bad = rgb('dd6b6f')
+
+    -- Colours and rounding only: spacing and padding belong to each window and are set after this call.
+    function theme.apply()
+        local style = imgui.GetStyle()
+        style.WindowRounding = 8.0
+        style.ChildRounding = 6.0
+        style.PopupRounding = 6.0
+        style.FrameRounding = 5.0
+        style.GrabRounding = 4.0
+        style.ScrollbarRounding = 6.0
+        style.TabRounding = 5.0
+        style.WindowBorderSize = 1.0
+        style.FrameBorderSize = 0.0 -- a border would swallow thin progress bars whole.
+
+        local hover, press = rgb('bb7aff', 0.22), rgb('bb7aff', 0.35)
+        local colors = {
+            Text = theme.text, TextDisabled = theme.muted,
+            WindowBg = theme.surface, ChildBg = white(0), PopupBg = theme.surface,
+            Border = theme.line, BorderShadow = white(0),
+            FrameBg = white(0.06), FrameBgHovered = white(0.10), FrameBgActive = white(0.14),
+            TitleBg = theme.bg, TitleBgActive = theme.bg, TitleBgCollapsed = theme.bg, MenuBarBg = theme.bg,
+            ScrollbarBg = white(0), ScrollbarGrab = white(0.16),
+            ScrollbarGrabHovered = rgb('bb7aff', 0.6), ScrollbarGrabActive = theme.accent,
+            CheckMark = theme.accent, SliderGrab = theme.accent, SliderGrabActive = theme.accentLight,
+            Button = white(0.06), ButtonHovered = hover, ButtonActive = press,
+            Header = white(0.06), HeaderHovered = white(0.09), HeaderActive = theme.accentTint,
+            Separator = theme.line, SeparatorHovered = rgb('bb7aff', 0.6), SeparatorActive = theme.accent,
+            ResizeGrip = white(0.08), ResizeGripHovered = rgb('bb7aff', 0.6), ResizeGripActive = theme.accent,
+            Tab = white(0.06), TabHovered = hover, TabActive = theme.accentTint,
+            TabUnfocused = white(0.04), TabUnfocusedActive = white(0.08),
+            PlotLines = theme.accent, PlotLinesHovered = theme.accentLight,
+            PlotHistogram = theme.accent, PlotHistogramHovered = theme.accentLight,
+            TableHeaderBg = theme.bg, TableBorderStrong = theme.line, TableBorderLight = white(0.06),
+            TableRowBg = white(0), TableRowBgAlt = white(0.03),
+            TextSelectedBg = rgb('bb7aff', 0.35), DragDropTarget = theme.accentLight, NavHighlight = theme.accent,
+            NavWindowingHighlight = white(0.7), NavWindowingDimBg = imgui.ImVec4(0, 0, 0, 0.5),
+            ModalWindowDimBg = imgui.ImVec4(0, 0, 0, 0.5),
+        }
+        for name, col in pairs(colors) do
+            -- A colour this mimgui build does not know is skipped, not fatal.
+            local ok, idx = pcall(function() return imgui.Col[name] end)
+            if ok and idx then style.Colors[idx] = col end
+        end
+    end
+
+    local function button(label, size)
+        if size then return imgui.Button(label, size) end
+        return imgui.Button(label)
+    end
+    -- One at a time: some builds ignore the count, and a leaked push kills imgui a few frames later.
+    local function pop(n)
+        for _ = 1, n do imgui.PopStyleColor(1) end
+    end
+
+    -- The single filled orange button of a window, for its main action.
+    function theme.primaryButton(label, size)
+        imgui.PushStyleColor(imgui.Col.Button, theme.accent)
+        imgui.PushStyleColor(imgui.Col.ButtonHovered, theme.accentLight)
+        imgui.PushStyleColor(imgui.Col.ButtonActive, theme.accent)
+        imgui.PushStyleColor(imgui.Col.Text, theme.bg)
+        local pressed = button(label, size)
+        pop(4)
+        return pressed
+    end
+
+    -- A button with an on state: orange tint and light orange text while on.
+    function theme.toggleButton(label, on, size)
+        if on then
+            imgui.PushStyleColor(imgui.Col.Button, theme.accentTint)
+            imgui.PushStyleColor(imgui.Col.Text, theme.accentSoft)
+        end
+        local pressed = button(label, size)
+        if on then pop(2) end
+        return pressed
+    end
+end
+-- arzhub-theme:end
+local u8 = encoding.UTF8
+
+local colors = {
+	value = '{73E6EF}',    -- Values and commands in chat, the ArzHub highlight.
+	overlay = '{FF710A}',  -- Values in the on-screen craft overlay.
+	white = '{FFFFFF}'
+}
+
+local tag = '{BB7AFF}[SHVA_Helper]' .. colors.white .. ': '
+local renderFont = renderCreateFont('Arial', 16, 13)
+
+local HISTORY_MAX_RECORDS = 1000
+local CARD_HEIGHT = 76
+local CLEAR_CONFIRM_SECONDS = 3
+
+-- ============================================================================
+-- HELPERS
+-- ============================================================================
+
+-- string.lower leaves CP1251 Cyrillic alone, so А-Я and Ё are mapped to their lowercase bytes.
+local LOWER_CP1251 = {['\168'] = '\184'}
+for b = 192, 223 do LOWER_CP1251[string.char(b)] = string.char(b + 32) end
+
+local function lowerCp1251(s)
+	return (s:lower():gsub('[\168\192-\223]', LOWER_CP1251))
+end
+
+-- imgui.Text* is printf-style, so a % in an item name would be read as a format specifier.
+local function esc(str)
+	return (tostring(str):gsub('%%', '%%%%'))
+end
+
+-- "12.5%" for imgui.Text*: the doubled sign survives the printf pass as one.
+local function percentUI(value)
+	return string.format('%.1f%%%%', value)
+end
+
+local function notify(text)
+	sampAddChatMessage(tag .. cyr(text), -1)
+end
+
+local function colored(value)
+	return colors.value .. tostring(value) .. colors.white
+end
+
+local function overlayValue(value)
+	return colors.overlay .. tostring(value) .. colors.white
+end
+
+-- "1 234 567$".
+local function formatMoneyFull(amount)
+	local str = tostring(amount)
+	local result = str:reverse():gsub('(%d%d%d)', '%1 '):reverse():gsub('^ ', '')
+	return result .. '$'
+end
+
+-- "500$" / "1.5k$" / "2.3kk$".
+local function formatMoney(amount)
+	if amount >= 1000000 then
+		return string.format('%.1fkk$', amount / 1000000)
+	elseif amount >= 1000 then
+		return string.format('%.1fk$', amount / 1000)
+	else
+		return string.format('%d$', amount)
+	end
+end
+
+-- "45 сек." / "2 мин." / "1 мин. 30 сек." for chat and the overlay.
+local function formatTime(seconds)
+	seconds = math.floor(seconds)
+	if seconds < 60 then
+		return string.format(cyr('%d сек.'), seconds)
+	else
+		local minutes = math.floor(seconds / 60)
+		seconds = seconds % 60
+		if seconds == 0 then
+			return string.format(cyr('%d мин.'), minutes)
+		else
+			return string.format(cyr('%d мин. %d сек.'), minutes, seconds)
+		end
+	end
+end
+
+-- "45 сек." / "~1 мин." / "~1.5 мин.".
+local function formatTimeShort(seconds)
+	seconds = math.floor(seconds)
+	if seconds < 60 then
+		return string.format(cyr('%d сек.'), seconds)
+	else
+		local minutes = math.floor(seconds / 30) * 0.5
+		if minutes % 1 == 0 then
+			return string.format(cyr('~%d мин.'), minutes)
+		else
+			return string.format(cyr('~%.1f мин.'), minutes)
+		end
+	end
+end
+
+-- Same as formatTime, but UTF-8 and shorter for the history window.
+local function formatTimeUI(seconds)
+	seconds = math.floor(seconds)
+	if seconds < 60 then
+		return string.format('%d сек.', seconds)
+	else
+		local minutes = math.floor(seconds / 60)
+		seconds = seconds % 60
+		if seconds == 0 then
+			return string.format('%d мин.', minutes)
+		else
+			return string.format('%d м. %d с.', minutes, seconds)
+		end
+	end
+end
+
+-- "Сегодня 14:05" / "Вчера 14:05" / "3 мар 14:05" / "3 мар 2025 14:05".
+local function formatDateRelative(dateStr)
+	if not dateStr then return '-' end
+	local today = os.date('%Y-%m-%d')
+	local yesterday = os.date('%Y-%m-%d', os.time() - 86400)
+	local recordDate = dateStr:sub(1, 10)
+	local recordTime = dateStr:sub(12, 16)
+
+	if recordDate == today then
+		return 'Сегодня ' .. recordTime
+	elseif recordDate == yesterday then
+		return 'Вчера ' .. recordTime
+	else
+		local day = tonumber(dateStr:sub(9, 10))
+		local month = tonumber(dateStr:sub(6, 7))
+		local year = dateStr:sub(1, 4)
+		local months = {'янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'}
+
+		if year == os.date('%Y') then
+			return day .. ' ' .. months[month] .. ' ' .. recordTime
+		else
+			return day .. ' ' .. months[month] .. ' ' .. year .. ' ' .. recordTime
+		end
+	end
+end
+
+-- ============================================================================
+-- CRAFT HISTORY (JSON)
+-- ============================================================================
+
+local historyDir = getWorkingDirectory() .. '\\config\\ArzHub\\craft-counter'
+
+-- One-time move from the old place, before the first read; a failed move keeps the old file and is retried next load.
+do
+	local old = getWorkingDirectory() .. '\\config\\TheMY3\\craft_history.json'
+	if not doesFileExist(historyDir .. '\\craft_history.json') and doesFileExist(old) then
+		createDirectory(getWorkingDirectory() .. '\\config\\ArzHub')
+		createDirectory(historyDir)
+		if not os.rename(old, historyDir .. '\\craft_history.json') then
+			print('history move failed, still using ' .. old)
+			historyDir = getWorkingDirectory() .. '\\config\\TheMY3'
+		end
+	end
+end
+
+local historyPath = historyDir .. '\\craft_history.json'
+local historyTmpPath = historyPath .. '.tmp'
+local historyBadPath = historyPath .. '.bad'
+
+local function readFile(path)
+	local f = io.open(path, 'rb')
+	if not f then return nil end
+	local content = f:read('*a')
+	f:close()
+	return content
+end
+
+-- A crash between remove and rename in saveHistory leaves only the temp file, so it is the fallback.
+local function loadHistory()
+	local path = historyPath
+	local content = readFile(path)
+	if not content then
+		path = historyTmpPath
+		content = readFile(path)
+	end
+	if not content or content == '' then return {} end
+
+	local ok, decoded = pcall(decodeJson, content)
+	if ok and type(decoded) == 'table' then return decoded end
+
+	-- Move the unreadable file aside so the next save does not overwrite what is left of it.
+	os.remove(historyBadPath)
+	os.rename(path, historyBadPath)
+	sampAddChatMessage(tag .. cyr('Файл истории повреждён и сохранён как craft_history.json.bad, история начата заново.'), -1)
+	return {}
+end
+
+-- Write to a temp file first so a crash mid-write cannot leave a torn history behind.
+local function saveHistory(history)
+	-- One level at a time: config\\ArzHub may not exist yet either.
+	if not doesDirectoryExist(historyDir) then
+		createDirectory(getWorkingDirectory() .. '\\config\\ArzHub')
+		createDirectory(historyDir)
+	end
+	local f = io.open(historyTmpPath, 'w')
+	if not f then return false end
+	f:write(encodeJson(history))
+	f:close()
+	os.remove(historyPath)
+	return os.rename(historyTmpPath, historyPath) and true or false
+end
+
+local function addToHistory(s)
+	local history = loadHistory()
+	table.insert(history, {
+		date = os.date('%Y-%m-%d %H:%M'),
+		item = s.itemName and cyr:decode(s.itemName) or nil,
+		success = s.success,
+		fail = s.fail,
+		spent = s.totalSpent,
+		time = math.floor(s.totalTime),
+		chance = s.chance
+	})
+	while #history > HISTORY_MAX_RECORDS do
+		table.remove(history, 1)
+	end
+	saveHistory(history)
+end
+
+-- ============================================================================
+-- HISTORY WINDOW
+-- ============================================================================
+
+local renderWindow = imgui.new.bool(false)
+local searchBuffer = imgui.new.char[256]('')
+
+local historyCache = {}    -- Records as stored, oldest first.
+local historyKeys = {}     -- Lowercase CP1251 item name per record, built once for the search.
+local historyTotals = {success = 0, fail = 0, spent = 0}
+local visibleRecords = {}  -- Indexes into historyCache matching the search, newest first.
+local lastSearch = nil
+local clearArmedUntil = 0
+
+local function refreshHistory()
+	historyCache = loadHistory()
+	historyKeys = {}
+	historyTotals = {success = 0, fail = 0, spent = 0}
+	for i, record in ipairs(historyCache) do
+		historyKeys[i] = lowerCp1251(cyr(record.item or 'Неизвестно'))
+		historyTotals.success = historyTotals.success + (record.success or 0)
+		historyTotals.fail = historyTotals.fail + (record.fail or 0)
+		historyTotals.spent = historyTotals.spent + (record.spent or 0)
+	end
+	lastSearch = nil
+end
+
+local function filterHistory(searchText)
+	visibleRecords = {}
+	local needle = lowerCp1251(cyr(searchText))
+	for i = #historyCache, 1, -1 do
+		if needle == '' or historyKeys[i]:find(needle, 1, true) then
+			visibleRecords[#visibleRecords + 1] = i
+		end
+	end
+	lastSearch = searchText
+end
+
+-- Colours and rounding come from the ArzHub theme; the spacing stays this window's own.
+local function applyTheme()
+	imgui.SwitchContext()
+	theme.apply()
+	local style = imgui.GetStyle()
+	style.WindowPadding = imgui.ImVec2(10, 10)
+	style.FramePadding = imgui.ImVec2(6, 4)
+	style.ItemSpacing = imgui.ImVec2(6, 4)
+	style.ScrollbarSize = 12.0
+	style.WindowTitleAlign = imgui.ImVec2(0.5, 0.5)
+end
+
+imgui.OnInitialize(function()
+	-- Window persistence belongs to the SHVA_Helper context.
+	-- Shared SHVA_Helper font atlas: do not clear fonts belonging to other panels.
+	local glyph_ranges = imgui.GetIO().Fonts:GetGlyphRangesCyrillic()
+	imgui.GetIO().Fonts:AddFontFromFileTTF(getFolderPath(0x14) .. '\\trebucbd.ttf', 16.0, nil, glyph_ranges)
+	imgui.InvalidateFontsTexture()
+	applyTheme()
+end)
+
+local function drawRecord(index)
+	local record = historyCache[index]
+	local itemName = record.item or 'Неизвестно'
+
+	imgui.PushStyleColor(imgui.Col.ChildBg, imgui.ImVec4(1, 1, 1, 0.04))
+	imgui.BeginChild('##record' .. index, imgui.ImVec2(-1, CARD_HEIGHT), true, imgui.WindowFlags.NoScrollbar)
+
+	-- Item name and success chance, date on the right.
+	local dateFormatted = formatDateRelative(record.date)
+	imgui.TextColored(theme.accentLight, u8(esc(itemName)))
+	imgui.SameLine(0, 0)
+	imgui.Text(u8(' (шанс успеха: ' .. esc(record.chance or 0) .. '%%)'))
+	imgui.SameLine(imgui.GetWindowWidth() - imgui.CalcTextSize(dateFormatted).x - 10)
+	imgui.TextDisabled(dateFormatted)
+
+	-- Attempts: total, success, fail and the actual rate.
+	local total = (record.success or 0) + (record.fail or 0)
+	local factPct = total > 0 and ((record.success or 0) / total * 100) or 0
+	imgui.Text(u8('Попыток: ' .. total .. ' - '))
+	imgui.SameLine(0, 0)
+	imgui.TextColored(theme.ok, u8('Удачно: ' .. tostring(record.success or 0)))
+	imgui.SameLine(0, 0)
+	imgui.Text(u8(' - '))
+	imgui.SameLine(0, 0)
+	imgui.TextColored(theme.bad, u8('Неудачно: ' .. tostring(record.fail or 0)))
+	imgui.SameLine(0, 0)
+	imgui.Text(u8(' (' .. percentUI(factPct) .. ')'))
+
+	imgui.Text(u8('Потрачено: ' .. formatMoneyFull(record.spent or 0) .. ' - Время: ' .. formatTimeUI(record.time or 0)))
+
+	imgui.EndChild()
+	imgui.PopStyleColor()
+end
+
+imgui.OnFrame(
+	function() return renderWindow[0] end,
+	function()
+		local resX, resY = getScreenResolution()
+		imgui.SetNextWindowPos(imgui.ImVec2(resX / 2, resY / 2), imgui.Cond.FirstUseEver, imgui.ImVec2(0.5, 0.5))
+		imgui.SetNextWindowSize(imgui.ImVec2(760, 600), imgui.Cond.FirstUseEver)
+
+		if imgui.Begin(u8('SHVA_Helper / Крафт v' .. thisScript().version .. ' - История крафтов##history'), renderWindow, imgui.WindowFlags.NoCollapse) then
+			imgui.PushItemWidth(180)
+			imgui.InputTextWithHint('##search', u8'Поиск по предмету...', searchBuffer, ffi.sizeof(searchBuffer))
+			imgui.PopItemWidth()
+
+			imgui.SameLine()
+			if imgui.Button(u8'Обновить') then
+				refreshHistory()
+			end
+
+			-- The first click only arms the button, the second one within a few seconds clears.
+			imgui.SameLine()
+			local armed = os.clock() < clearArmedUntil
+			if imgui.Button(armed and u8'Точно очистить?##clear' or u8'Очистить##clear') then
+				if armed then
+					saveHistory({})
+					refreshHistory()
+					clearArmedUntil = 0
+				else
+					clearArmedUntil = os.clock() + CLEAR_CONFIRM_SECONDS
+				end
+			end
+
+			local searchText = ffi.string(searchBuffer)
+			if searchText ~= lastSearch then
+				filterHistory(searchText)
+			end
+
+			imgui.Separator()
+
+			local totalAttempts = historyTotals.success + historyTotals.fail
+			local totalPct = totalAttempts > 0 and (historyTotals.success / totalAttempts * 100) or 0
+
+			imgui.Text(u8('Сессий: ' .. #historyCache .. ' - Попыток: ' .. totalAttempts .. ' - '))
+			imgui.SameLine(0, 0)
+			imgui.TextColored(theme.ok, u8('Удачно: ' .. historyTotals.success))
+			imgui.SameLine(0, 0)
+			imgui.Text(u8(' - '))
+			imgui.SameLine(0, 0)
+			imgui.TextColored(theme.bad, u8('Неудачно: ' .. historyTotals.fail))
+			imgui.SameLine(0, 0)
+			imgui.Text(u8(' (' .. percentUI(totalPct) .. ') - Потрачено: ' .. formatMoneyFull(historyTotals.spent)))
+
+			imgui.TextDisabled(u8('Лимит: ' .. HISTORY_MAX_RECORDS .. ' сессий. Старые записи заменяются новыми.'))
+
+			imgui.Separator()
+
+			imgui.BeginChild('##historyList', imgui.ImVec2(-1, -1), false)
+
+			-- Cards share one height, so only the ones in view are drawn and the rest is left as blank space.
+			local step = CARD_HEIGHT + imgui.GetStyle().ItemSpacing.y
+			local scrollY = imgui.GetScrollY()
+			local first = math.max(1, math.floor(scrollY / step))
+			local last = math.min(#visibleRecords, math.ceil((scrollY + imgui.GetWindowHeight()) / step) + 1)
+			local startY = imgui.GetCursorPosY()
+			for n = first, last do
+				imgui.SetCursorPosY(startY + (n - 1) * step)
+				drawRecord(visibleRecords[n])
+			end
+			imgui.SetCursorPosY(startY + #visibleRecords * step)
+			imgui.Dummy(imgui.ImVec2(0, 0))
+
+			imgui.EndChild()
+
+			imgui.End()
+		end
+	end
+)
+
+local function cmdCraftHistory()
+	if not renderWindow[0] then
+		refreshHistory()
+	end
+	renderWindow[0] = not renderWindow[0]
+end
+
+-- ============================================================================
+-- CRAFT TRACKING
+-- ============================================================================
+
+local stats = {
+	active = false,
+	maxCraft = 0,
+	currentCraft = 0,
+	timeStart = 0,
+	totalTime = 0,
+	speedPerItem = 0,
+	timeLeft = 0,
+	success = 0,
+	fail = 0,
+	cost = 0,
+	totalSpent = 0,
+	itemName = nil,
+	chance = 0
+}
+
+-- Chat prefixes the item name follows (CP1251).
+local PATTERN_CRAFT_SUCCESS = cyr("Вы успешно создали предмет '")
+local PATTERN_CRAFT_FAIL = cyr("Создание предмета '")
+
+local _, screenH = getScreenResolution()
+
+-- Item name between the prefix and the closing quote of a craft chat message.
+local function parseItemName(text)
+	local startPos = text:find(PATTERN_CRAFT_SUCCESS, 1, true)
+	if not startPos then
+		startPos = text:find(PATTERN_CRAFT_FAIL, 1, true)
+		if startPos then
+			startPos = startPos + #PATTERN_CRAFT_FAIL
+		end
+	else
+		startPos = startPos + #PATTERN_CRAFT_SUCCESS
+	end
+
+	if not startPos then return nil end
+
+	local endPos = text:find("'", startPos, true)
+	if not endPos then return nil end
+
+	return text:sub(startPos, endPos - 1)
+end
+
+local function formatItemName(itemName)
+	if itemName then
+		return cyr(' «') .. colored(itemName) .. cyr('»')
+	end
+	return ''
+end
+
+local function showFinalStats(action)
+	if stats.currentCraft > 0 then
+		local successPct = stats.success / stats.currentCraft * 100
+
+		sampAddChatMessage(tag .. cyr('Крафт предмета') .. formatItemName(stats.itemName) .. ' ' .. action .. '!', -1)
+		sampAddChatMessage(tag .. cyr('Попыток: ') .. colored(stats.currentCraft) .. cyr(' • Удачно: ') .. colored(stats.success)
+			.. cyr(' • Неудачно: ') .. colored(stats.fail) .. string.format(' (%.1f%%)', successPct), -1)
+		sampAddChatMessage(tag .. cyr('Потрачено: ') .. colored(formatMoneyFull(stats.totalSpent))
+			.. cyr(' • Время: ') .. colored(formatTime(stats.totalTime)), -1)
+		sampAddChatMessage(tag .. cyr('История крафтов: ') .. colored('/cchistory'), -1)
+	end
+end
+
+local function resetStats()
+	if stats.currentCraft > 0 then
+		addToHistory(stats)
+	end
+
+	stats.active = false
+	stats.timeStart = os.clock()
+	stats.currentCraft = 0
+	stats.totalTime = 0
+	stats.speedPerItem = 0
+	stats.timeLeft = 0
+	stats.success = 0
+	stats.fail = 0
+	stats.cost = 0
+	stats.totalSpent = 0
+	stats.chance = 0
+	stats.itemName = nil
+end
+
+local function parseCraftData(str)
+	local action = str:match('"action":(%d+)')
+	if not action then return nil end
+	action = tonumber(action)
+
+	if action == 1 then
+		local count = str:match('"count":(%d+)')
+		local cost = str:match('"cost":(%d+)')
+		local chance = str:match('"chance":(%d+)')
+		return {
+			action = 1,
+			count = tonumber(count) or 0,
+			cost = tonumber(cost) or 0,
+			chance = tonumber(chance) or 0
+		}
+	elseif action == 3 then
+		return { action = 3 }
+	elseif action == 4 then
+		local success = str:match('"success":(%d+)')
+		return {
+			action = 4,
+			success = tonumber(success) == 1
+		}
+	end
+
+	return nil
+end
+
+-- action 1: craft window opened (count, cost, chance).
+-- action 3: craft stopped (window closed or the stop button).
+-- action 4: one attempt finished (success: 0/1).
+local function handleCraftEvent(data)
+	if data.action == 1 then
+		if stats.active then
+			stats.maxCraft = data.count + stats.currentCraft
+		else
+			stats.maxCraft = data.count
+		end
+		stats.cost = data.cost
+		stats.chance = data.chance
+	elseif data.action == 3 then
+		if stats.active then
+			if stats.currentCraft >= stats.maxCraft then
+				showFinalStats(cyr('завершен'))
+			else
+				showFinalStats(cyr('прерван'))
+			end
+			resetStats()
+		end
+	elseif data.action == 4 then
+		if stats.active then
+			stats.currentCraft = stats.currentCraft + 1
+			stats.totalTime = os.clock() - stats.timeStart
+			stats.speedPerItem = stats.totalTime / stats.currentCraft
+			stats.timeLeft = stats.speedPerItem * (stats.maxCraft - stats.currentCraft)
+
+			if data.success then
+				stats.success = stats.success + 1
+			else
+				stats.fail = stats.fail + 1
+			end
+
+			stats.totalSpent = stats.totalSpent + stats.cost
+		end
+	end
+end
+
+local function readIncoming(bs)
+	raknetBitStreamIgnoreBits(bs, 8)
+	if raknetBitStreamReadInt8(bs) ~= 17 then return end
+	raknetBitStreamIgnoreBits(bs, 32)
+	local length = raknetBitStreamReadInt16(bs)
+	local encoded = raknetBitStreamReadInt8(bs)
+	local str = (encoded ~= 0)
+		and raknetBitStreamDecodeString(bs, length + encoded)
+		or raknetBitStreamReadString(bs, length)
+	if not str or not str:find('event.inventory.craft', 1, true) then return end
+
+	local data = parseCraftData(str)
+	if data then
+		handleCraftEvent(data)
+	end
+end
+
+local function readOutgoing(bs)
+	raknetBitStreamIgnoreBits(bs, 8)
+	if raknetBitStreamReadInt8(bs) ~= 18 then return end
+	local length = raknetBitStreamReadInt16(bs)
+	local str = raknetBitStreamReadString(bs, length)
+	if not str then return end
+
+	if str:find('^startCraft|') then
+		local amount = str:match('"amount":%s*(%d+)')
+		stats.maxCraft = tonumber(amount) or 0
+		stats.timeStart = os.clock()
+		stats.active = true
+		sampAddChatMessage(tag .. cyr('Вы начали крафт! Число крафтов: ') .. colored(stats.maxCraft) .. '.', -1)
+	elseif str:find('^stopCraft') then
+		if stats.active then
+			showFinalStats(cyr('остановлен'))
+			resetStats()
+		end
+	end
+end
+
+-- Other scripts read packet 220 too: rewind before and after parsing, and keep a parse error from killing the script.
+function onReceivePacket(id, bs)
+	if id ~= 220 or not bs then return end
+	raknetBitStreamResetReadPointer(bs)
+	local ok, err = pcall(readIncoming, bs)
+	raknetBitStreamResetReadPointer(bs)
+	if not ok then print('onReceivePacket: ' .. tostring(err)) end
+end
+
+function onSendPacket(id, bs)
+	if id ~= 220 or not bs then return end
+	raknetBitStreamResetReadPointer(bs)
+	local ok, err = pcall(readOutgoing, bs)
+	raknetBitStreamResetReadPointer(bs)
+	if not ok then print('onSendPacket: ' .. tostring(err)) end
+end
+
+function hook.onServerMessage(color, text)
+	if stats.active and not stats.itemName then
+		local itemName = parseItemName(text)
+		if itemName then
+			stats.itemName = itemName
+		end
+	end
+end
+
+-- ============================================================================
+-- UPDATES (/ccupdate): only through the ArzHub manager, the script just says where to get them
+-- ============================================================================
+
+-- Update navigation belongs to the SHVA_Helper host; no third-party manager downloads.
+local function removeIfExists(path)return os.remove(path)end
+local function checkForUpdate()
+    if SHVA_HostOpenUpdates then SHVA_HostOpenUpdates()end
+end
+local function checkForUpdateSilently()end
+
+
+function main()
+	repeat wait(0) until isSampAvailable()
+	-- Leftovers of the old self-updater; .old stays as the way back to the previous build.
+	removeIfExists(thisScript().path .. '.tmp')
+	removeIfExists(thisScript().path .. '.manifest.tmp')
+	wait(1500)
+
+	if not SHVA_HostSilentStartup then sampAddChatMessage(tag .. cyr('Загружен {73E6EF}v' .. thisScript().version .. '{FFFFFF}. История крафтов: {73E6EF}/cchistory'), -1) end
+	sampRegisterChatCommand('cchistory', cmdCraftHistory)
+	sampRegisterChatCommand('ccupdate', checkForUpdate)
+	checkForUpdateSilently()
+
+	while true do wait(0)
+		if stats.active then
+			stats.totalTime = os.clock() - stats.timeStart
+			if stats.currentCraft > 0 then
+				local timeSinceLastCraft = stats.totalTime - (stats.speedPerItem * stats.currentCraft)
+				local remainingCrafts = stats.maxCraft - stats.currentCraft
+				stats.timeLeft = math.max(0, (remainingCrafts * stats.speedPerItem) - timeSinceLastCraft)
+			end
+
+			local progress
+			if stats.currentCraft > 0 then
+				progress = cyr('Прогресс: ') .. overlayValue(stats.currentCraft) .. ' / ' .. overlayValue(stats.maxCraft)
+					.. ' (' .. formatTimeShort(stats.timeLeft) .. ')'
+			else
+				progress = cyr('Прогресс: ') .. overlayValue(stats.currentCraft) .. ' / ' .. overlayValue(stats.maxCraft)
+			end
+
+			local successPct = stats.currentCraft > 0 and (stats.success / stats.currentCraft * 100) or 0
+			local results = cyr('Результат: ') .. overlayValue(stats.success) .. ' / ' .. overlayValue(stats.fail) .. string.format(' (%.1f%%)', successPct)
+
+			local spent = cyr('Потрачено: ') .. overlayValue(formatMoney(stats.totalSpent))
+
+			local speed
+			if stats.currentCraft > 0 then
+				speed = cyr('Скорость: ') .. overlayValue(formatTime(stats.speedPerItem)) .. cyr(' / шт.')
+			else
+				speed = cyr('Скорость: ') .. overlayValue('...')
+			end
+
+			local text = table.concat({progress, results, spent, speed}, '\n')
+
+			renderFontDrawText(renderFont, text, 50, screenH * 0.45, 0xFFFFFFFF)
+		end
+	end
+end
+
+-- Integration entry points for the shared SHVA_Helper panel.
+function SHVA_HostPrepare()if not renderWindow[0]then cmdCraftHistory()end;renderWindow[0]=true end
+function SHVA_HostClosePanel()renderWindow[0]=false end

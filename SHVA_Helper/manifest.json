@@ -2,69 +2,69 @@
   "version": "2.8.10-bootstrap-test",
   "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/bootstrap-2.8.10/SHVA_Helper.lua",
   "sha256": "145ba7a328b1b9e6619532494a64bab5ef5492a2ae918c446b3a498e9eeddf40",
-  "bundleVersion": "2.9.7-thread-fix-beta",
+  "bundleVersion": "2.10.1-panels-beta",
   "files": [
     {
       "path": "Cripto_Shewa/assets/space_city.png",
-      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.7/Cripto_Shewa/assets/space_city.png",
-      "size": 2525402,
-      "sha256": "5f015517fc26e942ab7e9ac16ceaa004b7183bdd6bcbeafd05abd34b709d11cf"
+      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.10.1/Cripto_Shewa/assets/space_city.png",
+      "size": 191353,
+      "sha256": "25b32fbfca36e5d47d757e585259cef7f612a84e82ca70ff194c4ed91c9b3442"
     },
     {
       "path": "Cripto_Shewa/module_host.lua",
-      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.7/Cripto_Shewa/module_host.lua",
-      "size": 14592,
-      "sha256": "154b3aa2667cdc63bfc613a829276a08224eac44160ce7bd015d1d1ae0e9f5e5"
+      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.10.1/Cripto_Shewa/module_host.lua",
+      "size": 15859,
+      "sha256": "b7279cc75243b861e169e2b9f591e897b3c58af3727345366c411142134e48d2"
     },
     {
       "path": "Cripto_Shewa/modules/auto-spawn.lua",
-      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.7/Cripto_Shewa/modules/auto-spawn.lua",
-      "size": 15555,
-      "sha256": "e365e5dada7ba5c834138e76c02e6f8d93d15f26dcec31d0df5ccaac78638286"
+      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.10.1/Cripto_Shewa/modules/auto-spawn.lua",
+      "size": 17067,
+      "sha256": "44601b19093cc46677d203cc2dada60229fe994d1b92714686c2d1b369d38b3c"
     },
     {
       "path": "Cripto_Shewa/modules/battlepass-helper.lua",
-      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.7/Cripto_Shewa/modules/battlepass-helper.lua",
-      "size": 54764,
-      "sha256": "bf9bdfadd505c6ab4a55b390ff8241f22bd0dc271fdbf6fd5183ec72d5c1ac37"
+      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.10.1/Cripto_Shewa/modules/battlepass-helper.lua",
+      "size": 54753,
+      "sha256": "aea2b9a76a6f838afd056c72dee26fa0c3842a602ba39110a355fd8b1af8efa5"
     },
     {
       "path": "Cripto_Shewa/modules/case-opener.lua",
-      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.7/Cripto_Shewa/modules/case-opener.lua",
-      "size": 92496,
-      "sha256": "19d9f3373d1b534ae4950822c45203d262489fa78166a329bca2c3d2ad517874"
+      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.10.1/Cripto_Shewa/modules/case-opener.lua",
+      "size": 92504,
+      "sha256": "88c1735c4e1d52f932880dc4f34e598780c01c625e5633faa11034f1ce0529ce"
     },
     {
       "path": "Cripto_Shewa/modules/craft-counter.lua",
-      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.7/Cripto_Shewa/modules/craft-counter.lua",
-      "size": 28295,
-      "sha256": "8dd511f42558d336b250fc89bebe86e22b531bd62496d6830e2622136224dfce"
+      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.10.1/Cripto_Shewa/modules/craft-counter.lua",
+      "size": 28303,
+      "sha256": "6d2a926be7a235d68d7ee21279d19f389d11c7f00327e77d7a38aa58f631e963"
     },
     {
       "path": "Cripto_Shewa/modules/crypto-collector.lua",
-      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.7/Cripto_Shewa/modules/crypto-collector.lua",
-      "size": 93066,
-      "sha256": "d648ee038c2532b80398f6c1b908e4d3a52e0d4b25adbac498fb3635aec7199f"
+      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.10.1/Cripto_Shewa/modules/crypto-collector.lua",
+      "size": 93812,
+      "sha256": "d78295706eddfe1d966dd1a44687d3c6a4c705a0efe24ffd30850820097b5b18"
     },
     {
       "path": "Cripto_Shewa/modules/dialog-plus.lua",
-      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.7/Cripto_Shewa/modules/dialog-plus.lua",
-      "size": 12876,
-      "sha256": "239e464378852a7c3a9557ffa22cfdb0f0167dcf3dbde92d7c8ba97945d71cf8"
+      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.10.1/Cripto_Shewa/modules/dialog-plus.lua",
+      "size": 13046,
+      "sha256": "95e1d2bcee84d283a6e75d90d3e1d3efe69c794d139d09ac2da98e1b7652d088"
     },
     {
       "path": "Cripto_Shewa/modules/inventory-plus.lua",
-      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.7/Cripto_Shewa/modules/inventory-plus.lua",
-      "size": 50003,
-      "sha256": "e159088fd82eda271525c517e039b8b301310afba2dea977053179e7a8472a8c"
+      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.10.1/Cripto_Shewa/modules/inventory-plus.lua",
+      "size": 51120,
+      "sha256": "5c43a06c81075721e98bbe2986cad3d25e8edf266154208644dc07240e0a3c4f"
     },
     {
       "path": "SHVA_Helper.lua",
-      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.9.7/SHVA_Helper.lua",
-      "size": 94032,
-      "sha256": "3f7f8e282b51e6353f62c464ccc0e250476bea118c52a1eea4990d8ec75a2e11"
+      "url": "https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/releases/2.10.1/SHVA_Helper.lua",
+      "size": 100205,
+      "sha256": "5a2415a78ab3141ad8b8b5c60feb7b04d998af45b76494076f2d28194ad4fd20"
     }
   ],
   "channel": "test",
-  "notes": "SHEVA_Helper 2.9.2: \u043e\u0431\u043d\u043e\u0432\u043b\u0451\u043d \u0444\u043e\u043d \u0432 \u0444\u0438\u043e\u043b\u0435\u0442\u043e\u0432\u043e-\u0431\u0438\u0440\u044e\u0437\u043e\u0432\u043e\u0439 \u043f\u0430\u043b\u0438\u0442\u0440\u0435, \u043d\u0430\u0437\u0432\u0430\u043d\u0438\u0435 \u0440\u0438\u0441\u0443\u0435\u0442\u0441\u044f \u0438\u043d\u0442\u0435\u0440\u0444\u0435\u0439\u0441\u043e\u043c \u043e\u0442\u0434\u0435\u043b\u044c\u043d\u043e."
+  "notes": "Проверочная 2.10.1 Ice Glass: исправлена совместимость хоста mimgui, светлый интерфейс, открытые секции и настройки спавна. 24 набора стендовых проверок; запуск в GTA не проверен. После обновления полностью перезапустите игру."
 }

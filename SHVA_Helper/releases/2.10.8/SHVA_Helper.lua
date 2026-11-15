@@ -1,0 +1,2636 @@
+script_name('SHEVA_Helper')
+script_author('SHEVA_Helper; modules by ArzHub')
+script_version('2.10.8-inputs-beta')
+-- Startup diagnostics intentionally need no external Lua libraries.
+local boot={version='2.10.8-inputs-beta',stage='source',guiError=nil,commands={},bytes=0,runtime={}}
+do
+ local function trace(err)return debug and debug.traceback and debug.traceback(tostring(err),2)or tostring(err)end
+ local ok,dir=pcall(function()return getWorkingDirectory()end)
+ boot.path=ok and(dir..'/SHEVA_Helper-startup.log')or nil
+ if boot.path then local f=io.open(boot.path,'wb');if f then f:close()end end
+ function boot:record(stage,text)
+  self.stage=stage
+  local line=os.date('%Y-%m-%d %H:%M:%S ')..'['..stage..'] '..tostring(text or '')..'\n'
+  print('SHEVA_Helper ['..stage..'] '..tostring(text or ''))
+  if self.path and self.bytes<262144 then
+   local f=io.open(self.path,'ab')
+   if f then f:write(line);f:close();self.bytes=self.bytes+#line
+   elseif not self.logWriteFailed then self.logWriteFailed=true;print('SHEVA_Helper: cannot write startup log; check folder permissions: '..self.path)end
+  end
+ end
+ function boot:run(stage,fn,...)
+  local args={n=select('#',...),...};local values
+  local ok,err=xpcall(function()values={fn(unpack(args,1,args.n))}end,trace)
+  if not ok then self:record(stage..'-ERROR',err);return false,err end
+  return true,unpack(values)
+ end
+ -- Russian chat remains readable even when encoding/iconv failed to load.
+ function boot:chat(text)
+  if type(sampAddChatMessage)~='function'then return end
+  local encoded=tostring(text):gsub('[\194-\244][\128-\191]+',function(c)
+   local a,b=c:byte(1,2);local point=(a-192)*64+b-128
+   if #c==2 and point>=1040 and point<=1103 then return string.char(point-848)end
+   if #c==2 and point==1025 then return string.char(168)end
+   if #c==2 and point==1105 then return string.char(184)end
+   return '?'
+  end)
+  pcall(sampAddChatMessage,'{168B91}[SHEVA_Helper] {FFFFFF}'..encoded,-1)
+ end
+ function boot:ready()
+  if type(isSampAvailable)~='function'then return false end
+  local ok,ready=pcall(isSampAvailable);return ok and ready
+ end
+ function boot:waitForSamp()
+  self:record('wait-samp','Waiting for SA:MP API; startup log is already on disk')
+  local attempts=0
+  while not self:ready()do
+   wait(100);attempts=attempts+1
+   if attempts==150 or attempts%600==0 then
+    self:record('wait-samp','SA:MP not ready. Check SA:MP/SAMPFUNCS and the active game directory.')
+    if type(printStringNow)=='function'then pcall(printStringNow,'SHEVA: see SHEVA_Helper-startup.log',5000)end
+   end
+  end
+  self:record('samp-ready','SA:MP API available')
+ end
+ function boot:command(name,callback)
+  if self.commands[name]then return true end
+  if type(sampRegisterChatCommand)~='function'then self:record('command-ERROR','sampRegisterChatCommand unavailable');return false end
+  if type(sampIsChatCommandDefined)=='function'then
+   local ok,exists=pcall(sampIsChatCommandDefined,name)
+   if ok and exists then self:record('command-conflict','/'..name..' belongs to another script; left unchanged');return false end
+  end
+  local ok,result=self:run('command-register',sampRegisterChatCommand,name,function(args)
+   local handled=self:run('command-/'..name,callback,args)
+   if not handled then self:chat('Ошибка команды. Подробности: SHEVA_Helper-startup.log')end
+  end)
+  if not ok or result==false then self:record('command-ERROR','Could not register /'..name);return false end
+  self.commands[name]=true;self:record('command-ready','/'..name);return true
+ end
+ function boot:dependency(name)
+  local ok,value=pcall(require,name)
+  if ok then self:record('dependency-ready',name)else self:record('dependency-ERROR',name..': '..tostring(value))end
+  return ok,value
+ end
+ function boot:installGuiGuard(real)
+  local stack,tracking={},false
+  local proxy={}
+  -- The native igText* functions accept printf formats, not plain strings.
+  -- Literal item names and error messages may contain percent signs.
+  for _,name in ipairs({'Text','TextWrapped','TextDisabled'})do
+   proxy[name]=function(text,...)
+    if select('#',...)==0 then return real[name]('%s',tostring(text))end
+    return real[name](text,...)
+   end
+  end
+  proxy.TextColored=function(color,text,...)
+   if select('#',...)==0 then return real.TextColored(color,'%s',tostring(text))end
+   return real.TextColored(color,text,...)
+  end
+  local function callable(v)return type(v)=='function'or type(v)=='cdata'end
+  -- One input path for shell and embedded modules; failures remain local to the field.
+  local inputErrors={}
+  local function inputError(kind,label,detail)
+   local key=kind..':'..tostring(label);local now=os.time()
+   if not inputErrors[key]or now-inputErrors[key]>=5 then inputErrors[key]=now;boot:record('input-ERROR',detail..'; field '..tostring(label)..'; input values omitted')end
+  end
+  local function fieldCall(kind,label,...)
+   local fn=real[kind]
+   if not callable(fn)then
+    inputError(kind,label,kind..' unavailable');return false
+   end
+   local ok,result=pcall(fn,label,...)
+   if not ok then
+    -- Never record buffers or callback exception text: this also handles the token field.
+    inputError(kind,label,kind..' failed')
+    if callable(real.TextWrapped)then real.TextWrapped('%s','Поле ввода недоступно. Ошибка записана в SHEVA_Helper-startup.log; меню остаётся открытым.')end
+    return false
+   end
+   if callable(real.IsItemActive)and real.IsItemActive()==true then boot.textInputActive=true end
+   return result
+  end
+  if callable(real.InputText)then
+   proxy.InputText=function(label,buffer,size,flags,callback,userData)
+    return fieldCall('InputText',label,buffer,size,flags or 0,callback,userData)
+   end
+   proxy.InputTextWithHint=function(label,hint,buffer,size,flags,callback,userData)
+    if callable(real.TextDisabled)then real.TextDisabled('%s',tostring(hint))end
+    if callable(real.SmallButton)and callable(real.SetKeyboardFocusHere)then
+     if callable(real.SameLine)then real.SameLine()end
+     local focus=real.SmallButton('Ввод##focus'..tostring(label))
+     if focus then real.SetKeyboardFocusHere()end
+    end
+    -- Stable native InputText; password flags and callbacks are passed through unchanged.
+    return fieldCall('InputText',label,buffer,size,flags or 0,callback,userData)
+   end
+  end
+  for _,kind in ipairs({'InputInt','InputFloat','InputDouble'})do
+   if callable(real[kind])then proxy[kind]=function(label,...)return fieldCall(kind,label,...)end end
+  end
+  local function push(kind,fn)if tracking then stack[#stack+1]={kind=kind,close=fn}end end
+  local function pop(kind,count)
+   if not tracking then return false end
+   for _=1,count or 1 do
+    local found
+    for i=#stack,1,-1 do if stack[i].kind==kind then found=i;break end end
+    if not found then error('Unbalanced root GUI stack: '..kind,2)end
+    local entry=table.remove(stack,found);entry.close()
+   end
+   return true
+  end
+  local pairsToTrack={{'Begin','End',false},{'BeginChild','EndChild',false},{'BeginChildFrame','EndChildFrame',false},
+   {'BeginGroup','EndGroup',false},{'BeginTooltip','EndTooltip',false},{'BeginCombo','EndCombo',true},
+   {'BeginPopup','EndPopup',true},{'BeginPopupModal','EndPopup',true},{'BeginMenu','EndMenu',true},
+   {'BeginMenuBar','EndMenuBar',true},{'BeginMainMenuBar','EndMainMenuBar',true},
+   {'BeginTabBar','EndTabBar',true},{'BeginTabItem','EndTabItem',true},{'BeginTable','EndTable',true},
+   {'BeginListBox','EndListBox',true},{'PushFont','PopFont',false},{'PushIDStr','PopID',false},{'PushIDInt','PopID',false},{'PushIDPtr','PopID',false},{'PushIDRange','PopID',false},
+   {'PushStyleVarVec2','PopStyleVar',false},{'PushStyleVarFloat','PopStyleVar',false},{'PushStyleColor','PopStyleColor',false},
+   {'PushItemWidth','PopItemWidth',false},{'PushTextWrapPos','PopTextWrapPos',false},
+   {'PushAllowKeyboardFocus','PopAllowKeyboardFocus',false},{'PushButtonRepeat','PopButtonRepeat',false},
+   {'PushClipRect','PopClipRect',false}}
+  for _,entry in ipairs(pairsToTrack)do
+   local beginName,endName,conditional=entry[1],entry[2],entry[3]
+   if callable(real[beginName])and callable(real[endName])then
+    proxy[beginName]=function(...)
+     local values={real[beginName](...)}
+     if not conditional or values[1]then push(endName,function()real[endName]()end)end
+     return unpack(values)
+    end
+    proxy[endName]=function(count)
+     local multi=endName=='PopStyleVar'or endName=='PopStyleColor'
+     if pop(endName,multi and(count or 1)or 1)then return end
+     if multi then return real[endName](count or 1)end
+     return real[endName]()
+    end
+   end
+  end
+  proxy.OnInitialize=function(fn)
+   return real.OnInitialize(function()
+    local ok,err=boot:run('gui-init',fn)
+    if not ok then boot.guiError=err;boot.initFailed=true end
+   end)
+  end
+  proxy.OnFrame=function(predicate,draw,...)
+   return real.OnFrame(function(...)
+    if boot.guiError then return false end
+    local ok,visible=boot:run('gui-predicate',predicate,...)
+    if not ok then boot.guiError=visible;return false end
+    return visible
+   end,function(player)
+    stack={};tracking=true
+    local ok,err=boot:run('gui-frame',draw,player)
+    if ok and #stack>0 then ok=false;err='Root GUI left unclosed elements';boot:record('gui-frame-ERROR',err)end
+    for i=#stack,1,-1 do local closed,closeError=pcall(stack[i].close);if not closed then boot:record('gui-unwind-ERROR',closeError)end end
+    stack={};tracking=false
+    if not ok then
+     boot.guiError=err;boot:record('gui-context',boot.guiStage or 'root')
+     if player then player.HideCursor=true;player.LockPlayer=false end
+     if boot.onGuiError then pcall(boot.onGuiError,err)end
+     boot:chat('Ошибка интерфейса. Игра не заблокирована. Пришли SHEVA_Helper-startup.log.')
+     local reason=tostring(err):match('[^\r\n]+')or'unknown'
+     reason=reason:match(':%d+:%s*(.*)')or reason
+     boot:chat('Причина: '..reason:sub(1,90))
+     boot:chat('Скопировать отчёт об ошибке: /shevadiag')
+    end
+   end,...)
+  end
+  return setmetatable(proxy,{__index=real})
+ end
+ boot:record('source','SHEVA_Helper '..boot.version..'; working directory: '..tostring(dir))
+ if ok then
+  for _,relative in ipairs({'lib/moonloader.lua','lib/vkeys.lua','lib/encoding.lua','lib/iconv.dll','lib/mimgui/init.lua','lib/mimgui/cimguidx9.dll','lib/samp/events.lua','Cripto_Shewa/module_host.lua'})do
+   local f=io.open(dir..'/'..relative,'rb')
+   local size=f and f:seek('end');if f then f:close()end
+   boot:record('file-check',relative..'='..(size and tostring(size)..' bytes'or'MISSING/unreadable'))
+  end
+ end
+ if type(thisScript)=='function'then local ok,item=pcall(thisScript);if ok and item then boot:record('script-path',item.path or 'unknown')end end
+ for _,name in ipairs({'getMoonloaderVersion','getGameVersion','isSampfuncsLoaded'})do
+  if type(_G[name])=='function'then
+   local ok,value=pcall(_G[name]);if ok then boot.runtime[name]=value end
+   boot:record('runtime',name..'='..(ok and tostring(value)or 'error'))
+  end
+ end
+end
+
+local function dependencyFailure(name,err)
+    function main()
+        boot:waitForSamp()
+        boot:command('shevadiag',function()boot:chat('Нет библиотеки '..name..'. Пришли moonloader.log и SHEVA_Helper-startup.log.')end)
+        boot:chat('Запуск остановлен: '..name..'. Подробности: SHEVA_Helper-startup.log')
+        while true do wait(1000)end
+    end
+end
+if type(boot.runtime.getMoonloaderVersion)=='number'and boot.runtime.getMoonloaderVersion<26 then
+    boot:record('compatibility-ERROR','This build requires MoonLoader 0.26 or newer')
+    dependencyFailure('MoonLoader 0.26+',boot.runtime.getMoonloaderVersion);return
+end
+local moonAvailable,moonloader=boot:dependency('lib.moonloader')
+if not moonAvailable then dependencyFailure('lib.moonloader',moonloader);return end
+local moonAliasAvailable,moonAlias=boot:dependency('moonloader')
+if not moonAliasAvailable then dependencyFailure('moonloader',moonAlias);return end
+moonloader=moonAlias
+local guiAvailable,imgui=boot:dependency('mimgui')
+if not guiAvailable then dependencyFailure('mimgui',imgui);return end
+local guiApiAvailable,guiApiError=boot:run('gui-api',function()
+    assert(type(imgui)=='table','mimgui did not return a table')
+    assert(type(imgui.new)=='table','mimgui.new is unavailable')
+    for _,name in ipairs({'OnFrame','OnInitialize','GetIO','GetStyle','Begin','End'})do
+        local kind=type(imgui[name]);assert(kind=='function'or kind=='cdata','mimgui.'..name..' is unavailable')
+    end
+end)
+if not guiApiAvailable then dependencyFailure('mimgui API',guiApiError);return end
+imgui=boot:installGuiGuard(imgui)
+local ffiAvailable,ffi=boot:dependency('ffi')
+if not ffiAvailable then dependencyFailure('ffi',ffi);return end
+local encodingAvailable,encoding=boot:dependency('encoding')
+if not encodingAvailable then dependencyFailure('encoding/iconv',encoding);return end
+encoding.default = 'UTF-8'
+local cp = encoding.CP1251
+local root = getWorkingDirectory() .. '/config/Cripto_Shewa'
+local moduleRoot = getWorkingDirectory() .. '/Cripto_Shewa/modules/'
+local cfg = {name = 'SHEVA_Helper', key = 72, ctrl = true, shift = true, alt = false, server = 32, mode = 'sell', enabled = {}, animation = true, artwork = true, palette = 'emerald', skinVersion = 4, themeMode = 'dark', paydayNotifications = true, inventoryNames = false}
+local modules = {
+    {id='inventory-plus', name='Inventory Plus', title='Инвентарь', version='2.8.1-sheva', desc='Названия и поиск предметов в лавках, шкафах, складах и багажнике. Сортировка, «Забрать всё», MAX и подсчёт стоимости.', help='Открой инвентарь, лавку или хранилище. Улучшения появляются в исходном окне игры автоматически. «Забрать всё» по описанию автора не применяется к лавкам.', actions={{'Обновить справочник', '/ipreload'}}},
+    {id='case-opener',name='Case Opener',title='Кейсы',version='2.3.0',desc='Панель открытия кейсов, история дропа и правила автоматического режима.',help='Открой кейс — панель появится в его интерфейсе. Автоматический режим и правила включаются в панели модуля.',actions={{'История и правила','/caselogs'}}},
+    {id='battlepass-helper',name='BattlePass Helper',title='Боевой пропуск',version='1.5.0',desc='Задания боевого пропуска, прогресс, закрепление, скрытие и таймер сброса.',help='Настройки и задания открываются кнопкой ниже. Модуль может использовать собственную F9 — переназначь её в его настройках при конфликте.',actions={{'Задания и настройки','/bp'}}},
+    {id='crypto-collector',name='Crypto Collector',title='Криптовалюта',version='2.7.1',desc='Сбор криптовалюты из домов, история, состояния карт и список исключений.',help='Для сбора нужна Флешка майнера. Сбор запускается только твоим нажатием, не при входе в игру.',actions={{'История и настройки','/crstats'},{'Настройки сбора','/crconfig'},{'Начать сбор','/crypto'}}},
+    {id='dialog-plus',name='Dialog Plus',title='Игровые окна',version='1.3.1',desc='Выбор пунктов цифрами, единая нумерация и MAX в поддерживаемых окнах количества.',help='Работает автоматически в поддерживаемых диалогах. Повторное нажатие цифры может подтвердить выбор — учитывай это при покупке.',actions={}},
+    {id='craft-counter',name='Craft Counter',title='Крафт',version='1.5.0',desc='Прогресс крафта, удачные и неудачные попытки, расходы, время и история.',help='Счётчик начинает работать после запуска крафта в игре. История открывается кнопкой ниже.',actions={{'История крафтов','/cchistory'}}},
+    {id='auto-spawn',name='Auto Spawn',title='Спавн',version='1.1.0',desc='Сохранённое место спавна с автоматическим выбором после отсчёта.',help='Работает с новым интерфейсом авторизации. Отметь нужное место звёздочкой. Не запускай одновременно другие скрипты автоспавна.',actions={}}
+}
+-- These seven bundled adapters only parse the client CEF packet 220.
+for _,m in ipairs(modules)do m.packetIds={[220]=true}end
+local servers={'Vice-City','Phoenix','Tucson','Scottdale','Chandler','Brainburg','Saint-Rose','Mesa','Red-Rock','Yuma','Surprise','Prescott','Glendale','Kingman','Winslow','Payson','Gilbert','Show-Low','Casa-Grande','Page','Sun-City','Queen-Creek','Sedona','Holiday','Wednesday','Yava','Faraway','Bumble-Bee','Christmas','Mirage','Love','Drake','Space','Home'}
+local defaultSet='https://arzset.fun/?v=3&b=.yI7IPUfQgiJDQAAAAAiOgAAFyUIiQ0AAAAAIhMAAB4tInENAAAAAB6sAAAAAAiJDQAAAAAiMh.zAAAIiQ0AAAAAH-cf2R4qCIkNAAAAAB6mKL4AABz8DAAAAAAc7iMZAAAc-wAAAAAAACeKJ1IAB..-ACekBRT..gAnkgPp..4AJ5UD6QF.'
+cfg.setUrl=defaultSet
+local opened=imgui.new.bool(false)
+boot.onGuiError=function()opened[0]=false end
+local query=imgui.new.char[256]()
+local serverFilter=imgui.new.char[96]()
+local monitor={rows={},received=0,sourceAge='',error='',busy=false,lastAttempt=0,seq=0,byQueue=false}
+local tab=0
+local initialized=false
+local artwork=nil
+local headingFont=nil
+local titleFont=nil
+local rootIconRanges=nil
+local themeDirty=true
+local artPath=getWorkingDirectory()..'/Cripto_Shewa/assets/space_city.png'
+local binding=false
+local deferred={}
+local feedback=''
+local accent=imgui.ImVec4(0.0,0.43,0.46,1)
+local quiet=imgui.ImVec4(0.28,0.38,0.44,1)
+local function say(s) sampAddChatMessage('{168B91}[SHEVA_Helper] {FFFFFF}'..cp(s),0xFFFFFF) end
+local function log(s)
+    boot:record('app-log',s)
+    local old=io.open(root..'/unified.log','rb')
+    if old then local size=old:seek('end');old:close();if size and size>1048576 then os.remove(root..'/unified.log.old');os.rename(root..'/unified.log',root..'/unified.log.old')end end
+    local f=io.open(root..'/unified.log','ab')
+    if f then f:write(os.date('%Y-%m-%d %H:%M:%S '),s,'\n');f:close() end
+end
+local function validSet(url) return type(url)=='string' and #url<=4096 and url:match('^https://arzset%.fun/[%w%?&=%.%_%-%%#~]*$')~=nil end
+local function jsonTextUtf8(raw)
+    if raw:sub(1,3)==string.char(239,187,191)then raw=raw:sub(4)end
+    local i=1
+    while i<=#raw do
+        local c=raw:byte(i)
+        local n=c<128 and 0 or(c>=194 and c<=223 and 1 or(c>=224 and c<=239 and 2 or(c>=240 and c<=244 and 3 or -1)))
+        local valid=n>=0 and i+n<=#raw
+        if valid then for j=1,n do local v=raw:byte(i+j);if v<128 or v>191 then valid=false;break end end end
+        if valid and n==2 and(c==224 and raw:byte(i+1)<160 or c==237 and raw:byte(i+1)>159)then valid=false end
+        if valid and n==3 and(c==240 and raw:byte(i+1)<144 or c==244 and raw:byte(i+1)>143)then valid=false end
+        if not valid then
+            local ok,text=pcall(function()return encoding.UTF8:encode(raw,'CP1251')end)
+            if ok and type(text)=='string'then return text,true end
+            return nil,false
+        end
+        i=i+n+1
+    end
+    return raw,false
+end
+local function readJsonFile(path,limit)
+    local function read(candidate)
+        local f=io.open(candidate,'rb');if not f then return nil end
+        local raw=f:read((limit or 524288)+1);f:close()
+        if #raw>(limit or 524288)then return nil end
+        local text=jsonTextUtf8(raw);if not text then return nil end
+        local ok,data=pcall(decodeJson,text)
+        if ok and type(data)=='table'then return data,raw end
+    end
+    local value=read(path);if value then return value,false end
+    value=read(path..'.bak');if value then return value,true end
+    return nil,false
+end
+local function writeJsonFile(path,value,maxBytes)
+    local byteLimit=maxBytes or 1048576
+    if type(byteLimit)~='number'or byteLimit<1024 or byteLimit>4194304 or byteLimit~=math.floor(byteLimit)then return false,'Недопустимый размер файла.'end
+    local ok,data=pcall(encodeJson,value)
+    if not ok then return false,'Не удалось подготовить данные для сохранения.'end
+    local function write(candidate,bytes)
+        local f=io.open(candidate,'wb');if not f then return false end
+        local result=f:write(bytes);local closed=f:close();return result~=nil and closed~=nil
+    end
+    if #data>byteLimit then return false,'Файл настроек слишком большой.'end
+    if not write(path..'.tmp',data)then return false,'Нет доступа к файлу настроек.'end
+    local oldFile=io.open(path,'rb');local existed=oldFile~=nil
+    if oldFile then
+        local old=oldFile:read(byteLimit+1);oldFile:close()
+        if #old>byteLimit then os.remove(path..'.tmp');return false,'Прежний файл слишком большой; он сохранён без изменений.'end
+        local valid,decoded=pcall(decodeJson,old)
+        if valid and type(decoded)=='table'then
+            if not write(path..'.bak',old)then os.remove(path..'.tmp');return false,'Не удалось сохранить резервную копию настроек.'end
+        elseif not write(path..'.corrupt',old)then os.remove(path..'.tmp');return false,'Не удалось сохранить повреждённый файл отдельно.'end
+        os.remove(path..'.previous')
+        if not os.rename(path,path..'.previous')then os.remove(path..'.tmp');return false,'Файл занят. Изменения не сохранены.'end
+    end
+    if not os.rename(path..'.tmp',path)then
+        local restored=not existed or os.rename(path..'.previous',path)
+        os.remove(path..'.tmp')
+        return false,restored and 'Сохранение отменено; прежний файл восстановлен.'or'Ошибка восстановления. Используй резервную копию .bak.'
+    end
+    os.remove(path..'.previous');return true
+end
+local settingsDirty=false
+local function save()
+    settingsDirty=true
+    local ok,err=writeJsonFile(root..'/unified_settings.json',cfg)
+    if not ok then feedback=err;log(err)else settingsDirty=false end
+    return ok
+end
+local function load()
+    local d,recovered=readJsonFile(root..'/unified_settings.json')
+    if not d then return end
+    if recovered then feedback='Настройки восстановлены из резервной копии.';log(feedback)end
+    cfg.name='SHEVA_Helper'
+    if type(d.key)=='number' and d.key>=32 and d.key<=254 and not(d.key>=112 and d.key<=123) then cfg.key=math.floor(d.key) end
+    for _,k in ipairs({'ctrl','shift','alt'}) do if type(d[k])=='boolean' then cfg[k]=d[k] end end
+    if not(cfg.ctrl or cfg.shift or cfg.alt)then cfg.key=72;cfg.ctrl=true;cfg.shift=true;cfg.alt=false end
+    if type(d.server)=='number' and d.server>=0 and d.server<#servers and d.server==math.floor(d.server) then cfg.server=d.server end
+    if d.mode=='sell' or d.mode=='buy' or d.mode=='all' then cfg.mode=d.mode end
+    if validSet(d.setUrl) then cfg.setUrl=d.setUrl end
+    if type(d.inventoryNames)=='boolean'then cfg.inventoryNames=d.inventoryNames end
+    if type(d.paydayNotifications)=='boolean'then cfg.paydayNotifications=d.paydayNotifications end
+    if type(d.animation)=='boolean'then cfg.animation=d.animation end
+    if type(d.artwork)=='boolean'then cfg.artwork=d.artwork end
+    if d.skinVersion==4 then
+        if d.themeMode=='dark'or d.themeMode=='light'then cfg.themeMode=d.themeMode end
+        if d.palette=='emerald'or d.palette=='amber'or d.palette=='violet'or d.palette=='teal'then cfg.palette=d.palette end
+    end
+    if type(d.enabled)=='table' then for _,m in ipairs(modules) do if type(d.enabled[m.id])=='boolean' then cfg.enabled[m.id]=d.enabled[m.id] end end end
+end
+local host
+local function navigateModule(id)
+    if id=='__updates'then tab=10 else
+        for i,m in ipairs(modules)do if m.id==id then tab=i;break end end
+    end
+    opened[0]=true
+end
+local function findModule(m)
+    local item=host and host.items[m.id]
+    if item and item.started and not item.error then return item end
+end
+local function startModule(m)
+    local item=host and host.items[m.id]
+    if not item then m.error='Нужен перезапуск игры для загрузки модуля.';return false end
+    if item.error then m.error=item.error;return false end
+    if not item.started and not host:start(m.id)then m.error=item.error or 'Не удалось запустить модуль.';return false end
+    m.error=nil;return true
+end
+local function defer(f) deferred[#deferred+1]=f end
+local function runAction(m,command)
+    if not findModule(m)then feedback='Модуль не готов. Проверь журнал.';return end
+    local ok,err=host:call(m.id,command)
+    if not ok then feedback=err elseif command=='/crypto'then opened[0]=false else navigateModule(m.id)end
+end
+-- Load private module environments before mimgui initializes its shared font atlas.
+load()
+boot:record('host-load','Loading private module host')
+local ok,factory=pcall(dofile,getWorkingDirectory()..'/Cripto_Shewa/module_host.lua')
+if ok and type(factory)=='table'and type(factory.new)=='function'then
+    local created,value=boot:run('host-create',factory.new,{imgui=imgui,visible=function()return opened[0]end,navigate=navigateModule,log=log,close=function()opened[0]=false end,dispatch=defer,inventoryNames=function()return cfg.inventoryNames end,theme=function()return cfg.themeMode end})
+    if created and type(value)=='table'and type(value.load)=='function'and type(value.start)=='function'then
+        host=value;boot:record('host-version',tostring(value.revision or 'not reported'))
+    else boot:record('host-ERROR','Host did not initialize; root menu remains available')end
+    if host then for _,m in ipairs(modules)do
+        if cfg.enabled[m.id]~=false then
+            boot:record('module-load-begin',m.id)
+            local loaded,result=boot:run('module-load-'..m.id,function()return host:load(m,moduleRoot..m.id..'.lua')end)
+            boot:record('module-load-end',m.id..'; success='..tostring(loaded and result~=false))
+            if not loaded or not result then m.error=tostring(not loaded and result or(host.items[m.id]and host.items[m.id].error)or'Ошибка загрузки')end
+        end
+    end end
+else boot:record('host-ERROR',tostring(factory));log('Module host unavailable: '..tostring(factory))end
+
+local function marketUrl(text)
+    local escaped=text:gsub('[^%w%-_%.~]',function(c)return string.format('%%%02X',c:byte())end)
+    return 'https://online.arz-mcr.ru/?q='..escaped..'&server='..cfg.server..'&mode='..cfg.mode
+end
+
+local function stripHTML(text)
+    return (text:gsub('<[^>]*>',' '):gsub('&nbsp;',' '):gsub('&#160;',' '):gsub('\194\160',' '):gsub('&amp;','&'):gsub('%s+',' '):gsub('^%s+',''):gsub('%s+$',''))
+end
+local function numberText(text)
+    if not text then return nil end
+    text=stripHTML(text)
+    if not text:match('^[%d%s]+$') then return nil end
+    local n=tonumber((text:gsub('%s','')))
+    if n and n>=0 and n<=1000000 and n==math.floor(n) then return n end
+end
+local function parseServers(html)
+    if type(html)~='string' or #html>2*1024*1024 then return nil,'Неверный размер страницы.' end
+    local rows,seen={},{}
+    for article in html:gmatch('<article[%s>][^>]*>(.-)</article>')do
+        local name=article:match('<h3[^>]*>(.-)</h3>')
+        local id=tonumber(article:match('/images/servers/arizona%-(%d+)%.webp'))
+        local mobile=tonumber(article:match('/images/servers/arizonaMobile%-(%d+)%.webp'))
+        if article:find('/images/servers/vc%-1%.webp')then id=0 elseif mobile then id=100+mobile end
+        local stats=article:match('<div[^>]*class="[^"]*items%-baseline[^"]*"[^>]*>(.-)</div>')
+        local online,capacity,queue=nil,nil,0
+        if stats then
+            for span in stats:gmatch('<span[^>]*>(.-)</span>')do
+                local plain=stripHTML(span)
+                if plain:find('в очереди',1,true)then queue=numberText(plain:match('^(.-)%s+в очереди'))
+                elseif plain:match('^/')then capacity=numberText(plain:gsub('^/%s*',''))
+                elseif not online then online=numberText(plain)end
+            end
+        end
+        if name and id and online and capacity and queue and capacity>0 and not seen[id]then
+            name=stripHTML(name)
+            if #name>0 and #name<100 then
+                rows[#rows+1]={id=id,name=name,online=online,capacity=capacity,queue=queue};seen[id]=true
+            end
+        end
+    end
+    if #rows<10 then return nil,'Сайт не отдал список серверов: возможна блокировка или изменение страницы.' end
+    table.sort(rows,function(a,b)return a.id<b.id end)
+    local sourceAge='не указано'
+    for paragraph in html:gmatch('<p[^>]*>(.-)</p>')do
+        local plain=stripHTML(paragraph)
+        if plain:find('серверов',1,true)and plain:find('обновлено',1,true)then sourceAge=plain:match('обновлено%s+(.+)$')or sourceAge;break end
+    end
+    return rows,sourceAge
+end
+local function saveServerCache()
+    local ok,err=writeJsonFile(root..'/servers_cache.json',{rows=monitor.rows,received=monitor.received,sourceAge=monitor.sourceAge})
+    if not ok then log(err)end
+end
+local function loadServerCache()
+    local value=readJsonFile(root..'/servers_cache.json')
+    if not value or type(value.rows)~='table'then return end
+    local rows={}
+    for _,r in ipairs(value.rows)do
+        if type(r)=='table'and type(r.name)=='string'and type(r.id)=='number'
+            and type(r.online)=='number'and type(r.capacity)=='number'and type(r.queue)=='number'
+            and r.online>=0 and r.capacity>0 and r.queue>=0 then rows[#rows+1]=r end
+    end
+    monitor.rows=rows
+    if type(value.received)=='number'then monitor.received=value.received end
+    if type(value.sourceAge)=='string'then monitor.sourceAge=value.sourceAge end
+end
+local function refreshServers()
+    if monitor.busy then return false end
+    if os.time()-monitor.lastAttempt<60 then return false end
+    if type(downloadUrlToFile)~='function'then monitor.error='Загрузка недоступна в этой сборке MoonLoader.';return false end
+    monitor.lastAttempt=os.time();monitor.deadline=os.time()+25;monitor.busy=true;monitor.error='';monitor.seq=monitor.seq+1
+    local seq=monitor.seq
+    local path=root..'/servers_request_'..seq..'.html'
+    monitor.path=path
+    local ok,err=pcall(downloadUrlToFile,'https://arzhub.top/servers',path,function(_,status)
+        if status~=moonloader.download_status.STATUSEX_ENDDOWNLOAD then return end
+        if seq~=monitor.seq or not monitor.busy then os.remove(path);return end
+        monitor.completed=true
+    end)
+    if not ok then monitor.busy=false;monitor.error='Не удалось начать загрузку: '..tostring(err);log(monitor.error);return false end
+    return true
+end
+local function pollServers()
+    if monitor.busy and monitor.completed then
+        monitor.completed=false;monitor.busy=false
+        local f=io.open(monitor.path,'rb')
+        if not f then monitor.error='Данные не получены. Повтори обновление позже.';return end
+        local html=f:read(2*1024*1024+1);f:close();os.remove(monitor.path)
+        local rows,detail=parseServers(html)
+        if rows then monitor.rows=rows;monitor.received=os.time();monitor.sourceAge=detail;monitor.error='';saveServerCache()
+        else monitor.error=detail;log('Очереди: '..detail)end
+    elseif monitor.busy and os.time()>monitor.deadline then
+        monitor.busy=false;monitor.completed=false;monitor.error='Сайт не ответил за 25 секунд. Сохранённые данные не обновлены.';log(monitor.error)
+    end
+    if opened[0]and tab==11 and not monitor.busy and os.time()-monitor.lastAttempt>=60 then refreshServers()end
+end
+local function keyName()
+    local key=cfg.key>=65 and cfg.key<=90 and string.char(cfg.key) or ('VK '..cfg.key)
+    return (cfg.ctrl and 'Ctrl+' or '')..(cfg.shift and 'Shift+' or '')..(cfg.alt and 'Alt+' or '')..key
+end
+
+local function updateAccent()
+    quiet=cfg.themeMode=='dark'and imgui.ImVec4(0.73,0.83,0.78,1)or imgui.ImVec4(0.26,0.37,0.32,1)
+    if cfg.palette=='emerald'then accent=cfg.themeMode=='dark'and imgui.ImVec4(0.47,0.91,0.67,1)or imgui.ImVec4(0.04,0.40,0.25,1)
+    elseif cfg.palette=='violet'then accent=imgui.ImVec4(0.39,0.26,0.64,1)
+    elseif cfg.palette=='amber'then accent=imgui.ImVec4(0.55,0.34,0.06,1)
+    else accent=imgui.ImVec4(0.0,0.43,0.46,1)end
+end
+local function theme()
+    updateAccent()
+    local st=imgui.GetStyle()
+    st.WindowRounding=14;st.ChildRounding=10;st.FrameRounding=8;st.GrabRounding=7;st.ScrollbarRounding=9
+    st.WindowBorderSize=1;st.ChildBorderSize=1;st.FrameBorderSize=0
+    st.WindowPadding=imgui.ImVec2(16,12);st.ItemSpacing=imgui.ImVec2(12,10);st.FramePadding=imgui.ImVec2(12,8)
+    st.ScrollbarSize=9
+    local colors={
+        WindowBg={0.88,0.94,0.97,1},ChildBg={0.94,0.98,0.99,0.97},PopupBg={0.96,0.99,1,1},
+        Border={0.69,0.82,0.87,0.9},Text={0.07,0.14,0.19,1},TextDisabled={0.30,0.40,0.46,1},
+        Button={0.82,0.92,0.95,1},ButtonHovered={0.66,0.86,0.89,1},ButtonActive={0.48,0.77,0.80,1},
+        FrameBg={0.97,0.99,1,1},FrameBgHovered={0.88,0.96,0.98,1},FrameBgActive={0.80,0.92,0.95,1},
+        Header={0.76,0.90,0.93,1},HeaderHovered={0.65,0.85,0.89,1},HeaderActive={0.53,0.79,0.83,1},
+        ScrollbarBg={0.88,0.94,0.97,1},ScrollbarGrab={0.59,0.74,0.80,1},ScrollbarGrabHovered={0.40,0.65,0.71,1},
+        TableHeaderBg={0.82,0.92,0.95,1},TableBorderStrong={0.69,0.82,0.87,1},TableBorderLight={0.78,0.88,0.92,1},
+        TableRowBgAlt={0.83,0.93,0.96,0.45},TextSelectedBg={0.28,0.70,0.74,0.32},
+        Separator={0.66,0.81,0.86,1},TitleBg={0.84,0.94,0.97,1},TitleBgActive={0.79,0.91,0.94,1}}
+    if cfg.themeMode=='dark'then
+        colors={WindowBg={0.015,0.055,0.040,1},ChildBg={0.028,0.095,0.068,1},PopupBg={0.04,0.12,0.09,1},
+            Text={0.93,0.98,0.95,1},TextDisabled={0.73,0.83,0.78,1},Border={0.15,0.32,0.24,1},
+            Button={0.06,0.20,0.14,1},ButtonHovered={0.09,0.31,0.21,1},ButtonActive={0.12,0.40,0.27,1},
+            FrameBg={0.025,0.075,0.055,1},FrameBgHovered={0.04,0.15,0.10,1},FrameBgActive={0.06,0.20,0.14,1},
+            Header={0.07,0.23,0.16,1},HeaderHovered={0.09,0.32,0.22,1},HeaderActive={0.12,0.40,0.27,1},
+            ScrollbarBg={0.015,0.055,0.04,1},ScrollbarGrab={0.18,0.36,0.26,1},ScrollbarGrabHovered={0.25,0.48,0.35,1},
+            TableHeaderBg={0.04,0.15,0.10,1},TableBorderStrong={0.15,0.32,0.24,1},TableBorderLight={0.10,0.23,0.16,1},
+            TableRowBgAlt={0.04,0.15,0.10,0.5},TextSelectedBg={0.30,0.70,0.48,0.35},Separator={0.15,0.32,0.24,1},
+            TitleBg={0.025,0.08,0.055,1},TitleBgActive={0.04,0.15,0.10,1}}
+    end
+    for name,rgba in pairs(colors)do
+        local ok,index=pcall(function()return imgui.Col[name]end)
+        if ok and index then st.Colors[index]=imgui.ImVec4(unpack(rgba))end
+    end
+    for _,name in ipairs({'CheckMark','SliderGrab','SliderGrabActive','PlotLines','PlotHistogram','NavHighlight'})do
+        local ok,index=pcall(function()return imgui.Col[name]end)
+        if ok and index then st.Colors[index]=accent end
+    end
+end
+local function selectTheme(mode)
+    if mode~='dark'and mode~='light'then return false end
+    cfg.themeMode=mode;themeDirty=true
+    if host and host.setTheme then host:setTheme(mode)end
+    return save()
+end
+local function clockSeconds()
+    return type(getGameTimer)=='function'and getGameTimer()/1000 or os.clock()
+end
+local function pulseAlpha()
+    if not cfg.animation then return 1 end
+    return 0.76+0.24*(0.5+0.5*math.sin(clockSeconds()*1.8))
+end
+local function drawHero(compact)
+    local pos=imgui.GetCursorScreenPos()
+    local width=math.max(100,imgui.GetContentRegionAvail().x)
+    local height=compact and 100 or 126
+    local draw=imgui.GetWindowDrawList()
+    local edge=imgui.ImVec2(pos.x+width,pos.y+height)
+    draw:AddRectFilled(pos,edge,imgui.GetColorU32Vec4(imgui.ImVec4(0.80,0.92,0.97,1)),10)
+    if cfg.artwork and artwork then
+        draw:AddImage(artwork,pos,edge,imgui.ImVec2(0,0.20),imgui.ImVec2(1,0.80),imgui.GetColorU32Vec4(imgui.ImVec4(1,1,1,1)))
+        draw:AddRectFilledMultiColor(pos,edge,
+            imgui.GetColorU32Vec4((cfg.themeMode=='dark'and imgui.ImVec4(0.01,0.04,0.02,0.35)or imgui.ImVec4(0.94,0.99,1,0.35))),
+            imgui.GetColorU32Vec4((cfg.themeMode=='dark'and imgui.ImVec4(0.01,0.04,0.02,0.35)or imgui.ImVec4(0.94,0.99,1,0.35))),
+            imgui.GetColorU32Vec4((cfg.themeMode=='dark'and imgui.ImVec4(0.01,0.04,0.02,0.04)or imgui.ImVec4(0.94,0.99,1,0.04))),
+            imgui.GetColorU32Vec4((cfg.themeMode=='dark'and imgui.ImVec4(0.01,0.04,0.02,0.04)or imgui.ImVec4(0.94,0.99,1,0.04))))
+    end
+    local chosenFont=titleFont or headingFont
+    if chosenFont then imgui.PushFont(chosenFont)end
+    local nameSize=imgui.CalcTextSize(cfg.name)
+    local x=pos.x+math.max(12,(width-nameSize.x)/2)
+    local y=pos.y+12
+    draw:AddRectFilled(imgui.ImVec2(x-18,y-6),imgui.ImVec2(x+nameSize.x+18,y+nameSize.y+6),imgui.GetColorU32Vec4((cfg.themeMode=='dark'and imgui.ImVec4(0.015,0.06,0.04,0.91)or imgui.ImVec4(0.95,0.99,1,0.91))),10)
+    imgui.SetCursorScreenPos(imgui.ImVec2(x,y));imgui.TextColored((cfg.themeMode=='dark'and imgui.ImVec4(0.93,0.98,0.95,1)or imgui.ImVec4(0.04,0.12,0.17,1)),cfg.name)
+    if chosenFont then imgui.PopFont()end
+    imgui.SetCursorScreenPos(pos);imgui.Dummy(imgui.ImVec2(width,height+6))
+end
+local function badge(text,good)
+    local col=good and imgui.ImVec4(0.40,0.87,0.68,1)or quiet
+    local pos=imgui.GetCursorScreenPos();local size=imgui.CalcTextSize(text)
+    imgui.GetWindowDrawList():AddRectFilled(pos,imgui.ImVec2(pos.x+size.x+20,pos.y+size.y+10),imgui.GetColorU32Vec4(imgui.ImVec4(col.x,col.y,col.z,0.09)),5)
+    imgui.SetCursorScreenPos(imgui.ImVec2(pos.x+10,pos.y+5));imgui.TextColored(col,text)
+    imgui.SetCursorScreenPos(pos);imgui.Dummy(imgui.ImVec2(size.x+20,size.y+12))
+end
+imgui.OnInitialize(function()
+    boot:record('gui-init','Initializing fonts, artwork and theme')
+    local io=imgui.GetIO()
+    local font=(os.getenv('WINDIR')or'C:/Windows')..'/Fonts/tahoma.ttf'
+    if doesFileExist(font)then
+        local ranges=io.Fonts:GetGlyphRangesCyrillic()
+        local bodyFont=io.Fonts:AddFontFromFileTTF(font,16,nil,ranges)
+        if bodyFont then io.FontDefault=bodyFont end
+        -- Merge icons into the same deterministic default font used by all panels.
+        local iconsAvailable,icons=pcall(require,'fAwesome6')
+        if bodyFont and iconsAvailable then
+            local ok,err=pcall(function()
+                local config=imgui.ImFontConfig();config.MergeMode=true
+                rootIconRanges=imgui.new.ImWchar[3](icons.min_range,icons.max_range,0)
+                io.Fonts:AddFontFromMemoryCompressedBase85TTF(icons.get_font_data_base85('solid'),14,config,rootIconRanges)
+            end)
+            if not ok then log('Значки недоступны: '..tostring(err))end
+        end
+        headingFont=io.Fonts:AddFontFromFileTTF(font,22,nil,ranges)
+        titleFont=io.Fonts:AddFontFromFileTTF(font,38,nil,ranges)
+    end
+    if imgui.CreateTextureFromFile~=nil and doesFileExist(artPath)then
+        local ok,texture=pcall(imgui.CreateTextureFromFile,artPath)
+        if ok and texture then artwork=texture else log('Фон недоступен; используется однотонная тема.')end
+    end
+    theme();initialized=true
+    boot:record('gui-ready','GUI initialization completed')
+end)
+local function section(title,description)
+    if headingFont then imgui.PushFont(headingFont)end
+    imgui.Text(title)
+    if headingFont then imgui.PopFont()end
+    imgui.Spacing();imgui.Separator()
+    imgui.TextWrapped(description);imgui.Spacing()
+end
+local function drawModule(m)
+    local item=host and host.items[m.id];if item and item.error then m.error=item.error end
+    local hasPanel=item and item.frames and #item.frames>0
+    if hasPanel then
+        imgui.TextColored(accent,'SHEVA_Helper / '..m.title);imgui.SameLine();imgui.TextDisabled('v'..m.version)
+    else section(m.title,m.desc)end
+    if m.id=='auto-spawn'and item and item.env and item.env.SHVA_HostSpawnSettings then
+        local state=item.env.SHVA_HostSpawnSettings()
+        imgui.TextColored(accent,'Точка следующего появления')
+        imgui.TextWrapped(state.target~=''and state.target or 'Не выбрана — автоспавн выключен')
+        local delay=imgui.new.int(state.delay)
+        if imgui.SliderInt('Пауза перед выбором, сек.',delay,0,30)then
+            local value=delay[0];defer(function()
+                local ok,err=item.env.SHVA_HostSetSpawnSettings(nil,value)
+                feedback=ok and'Задержка спавна сохранена.'or tostring(err)
+            end)
+        end
+        imgui.TextWrapped('Настройка применяется при следующем выборе места в игре. Эти кнопки не перемещают персонажа сейчас.')
+        if #state.points==0 then
+            imgui.TextWrapped('Список мест ещё не получен от игры. При следующем входе открой выбор спавна; места появятся здесь автоматически.')
+        end
+        for index,point in ipairs(state.points)do
+            if imgui.Button(point..'##spawnPoint'..index,imgui.ImVec2(-1,34))then
+                local target=point;defer(function()
+                    local ok,err=item.env.SHVA_HostSetSpawnSettings(target,nil)
+                    feedback=ok and'Место следующего спавна сохранено.'or tostring(err)
+                end)
+            end
+        end
+        if state.target~=''and imgui.Button('Выключить автоспавн')then defer(function()
+            local ok,err=item.env.SHVA_HostSetSpawnSettings('',nil)
+            feedback=ok and'Автоспавн выключен.'or tostring(err)
+        end)end
+        imgui.Separator()
+    end
+    if m.id=='inventory-plus'then
+        local features={{'Поиск предметов','Лавки, шкафы, склады, багажник'},{'Сортировка','Предметы в алфавитном порядке'},{'Забрать всё','Поддерживаемые хранилища, кроме лавок'},{'MAX и «Итого»','Количество и стоимость в окнах покупки'}}
+        local width=imgui.GetContentRegionAvail().x
+        local columns=width>=500 and 2 or 1
+        for i,item in ipairs(features)do
+            imgui.BeginChild('##feature'..i,imgui.ImVec2((width-(columns-1)*12)/columns,88),true,imgui.WindowFlags.NoScrollbar)
+            imgui.TextColored(accent,item[1]);imgui.TextWrapped(item[2]);imgui.EndChild()
+            if i%columns~=0 and i<#features then imgui.SameLine()end
+        end
+        imgui.Spacing()
+    end
+    if m.id=='inventory-plus'then
+        local plates=imgui.new.bool(cfg.inventoryNames)
+        if imgui.Checkbox('Названия над иконками предметов',plates)then
+            cfg.inventoryNames=plates[0];save()
+            defer(function()
+                if host and host.setInventoryNamePlates then
+                    local ok,err=host:setInventoryNamePlates(cfg.inventoryNames)
+                    feedback=ok and(cfg.inventoryNames and'Названия над предметами включены.'or'Названия над предметами скрыты.')or tostring(err)
+                end
+            end)
+        end
+        imgui.TextWrapped('Выключено по умолчанию. Поиск и сортировка продолжают работать; обычная подсказка игры при наведении сохраняется.')
+    elseif m.id=='dialog-plus'then
+        local examples={{'Номера в списках','В игровых окнах пункты получают номера. Это помогает быстро выбрать нужную строку.'},
+            {'Выбор клавишами 1–0','1–9 выбирают строки 1–9, клавиша 0 — строку 10. Повторное нажатие подтверждает выбор.'},
+            {'Кнопка MAX','В поддерживаемом окне количества MAX подставляет доступное количество.'}}
+        local available=imgui.GetContentRegionAvail().x
+        local columns=available>=720 and 3 or 1
+        for index,example in ipairs(examples)do
+            local width=(available-(columns-1)*12)/columns
+            local height=columns==3 and 152 or 88
+            local pos=imgui.GetCursorScreenPos()
+            imgui.GetWindowDrawList():AddRectFilled(imgui.ImVec2(pos.x+3,pos.y+4),imgui.ImVec2(pos.x+width+3,pos.y+height+4),imgui.GetColorU32Vec4(imgui.ImVec4(0.28,0.50,0.58,0.10)),10)
+            imgui.PushStyleColor(imgui.Col.ChildBg,(cfg.themeMode=='dark'and imgui.ImVec4(0.028,0.095,0.068,1)or imgui.ImVec4(0.94,0.98,1,1)))
+            imgui.BeginChild('##dialogGuide'..index,imgui.ImVec2(width,height),true,imgui.WindowFlags.NoScrollbar)
+            imgui.TextColored(accent,example[1]);imgui.TextWrapped(example[2]);imgui.EndChild();imgui.PopStyleColor()
+            if index%columns~=0 then imgui.SameLine()end
+        end
+        imgui.TextWrapped('Проверка: закрой помощник и открой обычное игровое окно со списком. Этот инструмент изменяет такие окна, а не открывает отдельный чат.')
+    end
+    local live=findModule(m)~=nil
+    imgui.TextColored(live and (cfg.themeMode=='dark'and imgui.ImVec4(0.47,0.91,0.67,1)or imgui.ImVec4(0.05,0.43,0.34,1)) or quiet,live and 'Модуль загружен' or 'Модуль не загружен')
+    imgui.Separator()
+    if hasPanel then imgui.TextWrapped(m.desc)end
+    local enabled=imgui.new.bool(cfg.enabled[m.id]~=false)
+    if imgui.Checkbox('Запускать модуль при следующем входе##'..m.id,enabled) then
+        cfg.enabled[m.id]=enabled[0];save()
+        feedback='Настройка запуска сохранена. Применится после полного перезапуска игры.'
+    end
+    if m.id~='dialog-plus'then imgui.TextWrapped(m.help)end
+    if not live then
+        imgui.TextWrapped('После устранения причины выполни полный перезапуск игры.')
+        if imgui.Button('Диагностика##'..m.id)then tab=10 end
+    end
+    if m.error then imgui.TextWrapped('Ошибка: '..m.error) end
+    imgui.Spacing()
+    for _,action in ipairs(m.actions) do
+        if imgui.Button(action[1],imgui.ImVec2(260,35)) then local command=action[2];defer(function()runAction(m,command)end) end
+    end
+    imgui.Spacing();imgui.Separator()
+    if live and host then
+        local drawn,err=host:draw(m.id)
+        if err then m.error=err;imgui.TextWrapped('Панель остановлена: '..tostring(err))
+        elseif not drawn and m.id~='dialog-plus'and m.id~='inventory-plus'then imgui.TextWrapped('Этот модуль работает прямо в игровых окнах; отдельная панель ему не нужна.')end
+    end
+end
+
+local function raisedCard(id,size)
+    local pos=imgui.GetCursorScreenPos()
+    imgui.GetWindowDrawList():AddRectFilled(imgui.ImVec2(pos.x+2,pos.y+4),imgui.ImVec2(pos.x+size.x+2,pos.y+size.y+4),imgui.GetColorU32Vec4(imgui.ImVec4(0.18,0.40,0.50,0.12)),10)
+    return imgui.BeginChild(id,size,true,imgui.WindowFlags.NoScrollbar)
+end
+local function metric(label,value,width)
+    raisedCard('##metric'..label,imgui.ImVec2(width,70))
+    imgui.TextColored(quiet,label)
+    imgui.TextColored(accent,value)
+    imgui.EndChild()
+end
+local function drawHome()
+    section('Обзор','Состояние помощника и подключённых инструментов. Разделы открываются в меню слева.')
+    local n,failed=0,0
+    for _,m in ipairs(modules)do
+        if findModule(m)then n=n+1 end
+        local item=host and host.items[m.id]
+        if m.error or(item and item.error)then failed=failed+1 end
+    end
+    local width=math.max(250,imgui.GetContentRegionAvail().x);local cell=(width-24)/3
+    metric('МОДУЛИ',n..' / 7 загружено',cell);imgui.SameLine()
+    metric('ТВОЙ СЕРВЕР',servers[cfg.server+1],cell);imgui.SameLine()
+    metric('ОТКРЫТЬ ПОМОЩНИК',keyName(),cell)
+    imgui.Spacing();imgui.Text('Проверка инструментов');imgui.Separator()
+    for _,m in ipairs(modules)do
+        local item=host and host.items[m.id]
+        imgui.Text(m.title);imgui.SameLine(math.max(160,width*0.40))
+        if m.error or(item and item.error)then
+            imgui.TextColored((cfg.themeMode=='dark'and imgui.ImVec4(1,0.56,0.59,1)or imgui.ImVec4(0.70,0.18,0.23,1)),'Требуется проверка')
+        elseif findModule(m)then imgui.TextColored(accent,'Загружен')
+        else imgui.TextColored(quiet,'Не запущен')end
+    end
+    if failed>0 and imgui.Button('Открыть диагностику')then tab=10 end
+    imgui.Spacing();imgui.TextWrapped('Инвентарь и игровые окна улучшают окна самой игры. Цены и архив отображают сохранённые данные, а не текущие предложения всех лавок.')
+end
+local localPrices={rows={},error='',loaded=false,page=1,filtered={},lastFilter=nil}
+local priceFoldMap={}
+do
+    local upper='АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ'
+    local lower='абвгдеёжзийклмнопрстуфхцчшщъыьэюя'
+    for i=1,#upper,2 do priceFoldMap[upper:sub(i,i+1)]=lower:sub(i,i+1)end
+end
+local function priceFold(text)
+    return tostring(text):gsub('[\194-\223][\128-\191]',priceFoldMap):lower()
+end
+local function priceLabel(value,currency)
+    local text=string.format('%.0f',value)
+    local sign=text:sub(1,1)=='-'and'-'or''
+    if sign~=''then text=text:sub(2)end
+    text=text:reverse():gsub('(%d%d%d)','%1 '):reverse():gsub('^ ','')
+    local labels={sa='$',vc='VC$',az='AZ',btc='BTC',asc='ASC'}
+    local label=labels[tostring(currency):lower()]or tostring(currency):upper()
+    return label..' '..sign..text
+end
+local function loadLocalPrices()
+    localPrices.loaded=true;localPrices.error='';localPrices.rows={};localPrices.lastFilter=nil
+    local db,recovered=readJsonFile(root..'/prices.json',8*1024*1024)
+    if not db then localPrices.error='Сохранённая база не найдена или повреждена. Новые цены не выдумываются.';return end
+    if recovered then localPrices.error='Показана резервная копия базы. Обрати внимание на дату.'end
+    for _,row in pairs(db)do
+        if type(row)=='table'and type(row.name)=='string'and #row.name<=240 and not row.name:find('[%c]')and type(row.price)=='number'and row.price==row.price and row.price>=0 and row.price<=1000000000000000 then
+            localPrices.rows[#localPrices.rows+1]={name=row.name,key=priceFold(row.name),price=row.price,currency=tostring(row.currency or 'sa'):sub(1,12):lower(),updated=tostring(row.updated or 'не указано'):sub(1,80)}
+        end
+    end
+    table.sort(localPrices.rows,function(a,b)return a.key<b.key end)
+end
+
+local plans={version=1,active=1,sets={{name='Мой сет',items={}}}}
+local plansLoaded=false
+local plansDirty=false
+local planNameBuffer=imgui.new.char[128]()
+local planItemBuffer=imgui.new.char[256]()
+local planPriceBuffer=imgui.new.char[48]()
+local planBufferIndex=nil
+local planCurrency='sa'
+local deletePlanArmed=false
+local function validMoney(n)return type(n)=='number'and n==n and n>=0 and n<=1000000000000000 end
+local function cleanName(value,max)
+ if type(value)~='string'then return nil end
+ value=value:gsub('^%s+',''):gsub('%s+$','')
+ if #value<1 or #value>max or value:find('[%c#]')then return nil end
+ return value
+end
+local function loadPlans()
+ plansLoaded=true
+ local data,recovered=readJsonFile(root..'/sets.json',1048576)
+ if not data or type(data.sets)~='table'then return end
+ local sets={}
+ for _,set in ipairs(data.sets)do
+  if #sets>=20 then break end
+  local name=type(set)=='table'and cleanName(set.name,120)
+  if name and type(set.items)=='table'then
+   local items={}
+   for _,item in ipairs(set.items)do
+    if #items>=60 then break end
+    local itemName=type(item)=='table'and cleanName(item.name,240)
+    if itemName and validMoney(item.price)and type(item.quantity)=='number'and item.quantity>=1 and item.quantity<=999
+     and item.quantity==math.floor(item.quantity)and type(item.currency)=='string'and item.currency:match('^[%w_]+$')and #item.currency<=12 then
+     items[#items+1]={name=itemName,price=item.price,quantity=item.quantity,currency=item.currency:lower(),updated=tostring(item.updated or 'Вручную'),source=item.source=='cache'and'cache'or'manual'}
+    end
+   end
+   sets[#sets+1]={name=name,items=items}
+  end
+ end
+ if #sets>0 then
+  plans.sets=sets
+  plans.active=type(data.active)=='number'and data.active==data.active and math.max(1,math.min(#sets,math.floor(data.active)))or 1
+ end
+ if recovered then feedback='Сеты восстановлены из резервной копии.';log(feedback)end
+ planBufferIndex=nil
+end
+local function savePlans()
+ plansDirty=true
+ local ok,err=writeJsonFile(root..'/sets.json',plans)
+ if not ok then feedback=err;log(err)else plansDirty=false end
+ return ok
+end
+local function currentPlan()
+ if not plansLoaded then loadPlans()end
+ return plans.sets[plans.active]
+end
+local function planTotals(set)
+ local totals={}
+ for _,item in ipairs(set.items)do totals[item.currency]=(totals[item.currency]or 0)+item.price*item.quantity end
+ return totals
+end
+local function addToPlan(row,source)
+ local set=currentPlan();local name=cleanName(row.name,240)
+ if not name or not validMoney(row.price)then feedback='Укажи название и неотрицательную цену.';return false end
+ local currency=tostring(row.currency or 'sa'):lower()
+ if #currency>12 or not currency:match('^[%w_]+$')then feedback='Неизвестная валюта.';return false end
+ for _,item in ipairs(set.items)do
+  if priceFold(item.name)==priceFold(name)and item.currency==currency then
+   if item.quantity>=999 then feedback='Максимум 999 штук в строке.';return false end
+   item.quantity=item.quantity+1;local ok=savePlans();return ok
+  end
+ end
+ if #set.items>=60 then feedback='В одном сете максимум 60 строк.';return false end
+ set.items[#set.items+1]={name=name,price=row.price,quantity=1,currency=currency,updated=tostring(row.updated or 'Вручную'),source=source=='cache'and'cache'or'manual'}
+ local ok=savePlans();if ok then feedback='Добавлено в «'..set.name..'».'end
+ return ok
+end
+local function drawMarket()
+    section('Цены SHEVA_Helper','Сохранённые средние цены. Это справочник, а не список актуальных предложений лавок.')
+    if not localPrices.loaded then defer(loadLocalPrices)end
+    imgui.PushItemWidth(360);imgui.InputTextWithHint('##item','Название товара',query,ffi.sizeof(query));imgui.PopItemWidth()
+    if imgui.Button('Обновить из сохранённой базы')then defer(loadLocalPrices)end
+    if localPrices.error~=''then imgui.TextWrapped(localPrices.error)end
+    imgui.TextDisabled('Предметов: '..#localPrices.rows..'. Проверяй дату: сохранённая цена может устареть.')
+    local filter=priceFold(ffi.string(query))
+    if filter~=localPrices.lastFilter then
+        localPrices.filtered={};localPrices.page=1;localPrices.lastFilter=filter
+        for _,row in ipairs(localPrices.rows)do if filter==''or row.key:find(filter,1,true)then localPrices.filtered[#localPrices.filtered+1]=row end end
+    end
+    local pageCount=math.max(1,math.ceil(#localPrices.filtered/50))
+    if imgui.Button('Назад##pricePage')then localPrices.page=math.max(1,localPrices.page-1)end;imgui.SameLine()
+    imgui.Text('Страница '..localPrices.page..' / '..pageCount..' · найдено '..#localPrices.filtered);imgui.SameLine()
+    if imgui.Button('Далее##pricePage')then localPrices.page=math.min(pageCount,localPrices.page+1)end
+    local tableWidth=imgui.GetContentRegionAvail().x
+    imgui.Columns(4,'##localPrices',true)
+    imgui.SetColumnWidth(0,tableWidth*0.45);imgui.SetColumnWidth(1,tableWidth*0.23);imgui.SetColumnWidth(2,tableWidth*0.22)
+    imgui.Text('Предмет');imgui.NextColumn();imgui.Text('Средняя цена');imgui.NextColumn();imgui.Text('Обновлено');imgui.NextColumn();imgui.Text('В сет');imgui.NextColumn();imgui.Separator()
+    local first=(localPrices.page-1)*50+1
+    for index=first,math.min(first+49,#localPrices.filtered)do
+        local row=localPrices.filtered[index]
+        imgui.TextWrapped(row.name);imgui.NextColumn();imgui.Text(priceLabel(row.price,row.currency));imgui.NextColumn();imgui.Text(row.updated);imgui.NextColumn()
+        if imgui.Button('+ В сет##cached'..index)then local value=row;defer(function()addToPlan(value,'cache')end)end
+        imgui.NextColumn()
+    end
+    imgui.Columns(1)
+end
+local function drawSets()
+    section('Сеты SHEVA_Helper','Планируй состав и бюджет внутри помощника. Это список с оценкой стоимости, без 3D-примерки и изменения вещей в игре.')
+    local set=currentPlan()
+    if plansDirty then
+        imgui.TextColored((cfg.themeMode=='dark'and imgui.ImVec4(1,0.56,0.59,1)or imgui.ImVec4(0.70,0.18,0.23,1)),'Есть несохранённые изменения. Не закрывай игру до сохранения.')
+        if imgui.Button('Повторить сохранение сета')then savePlans()end
+    end
+    if planBufferIndex~=plans.active then ffi.copy(planNameBuffer,set.name);planBufferIndex=plans.active;deletePlanArmed=false end
+    imgui.TextColored(quiet,'Сохранённые сеты')
+    local columns=math.max(1,math.floor(imgui.GetContentRegionAvail().x/190))
+    for i,value in ipairs(plans.sets)do
+        if imgui.Button((plans.active==i and '• 'or'')..value.name..'##plan'..i,imgui.ImVec2(180,32))then plans.active=i;planBufferIndex=nil;savePlans()end
+        if i%columns~=0 and i<#plans.sets then imgui.SameLine()end
+    end
+    set=currentPlan()
+    if imgui.Button('Новый сет')then
+        if #plans.sets<20 then
+            plans.sets[#plans.sets+1]={name='Новый сет '..(#plans.sets+1),items={}};plans.active=#plans.sets;planBufferIndex=nil;savePlans()
+        else feedback='Можно сохранить максимум 20 сетов.'end
+    end
+    imgui.SameLine()
+    if imgui.Button('Добавить предметы из справочника')then tab=8 end
+    imgui.PushItemWidth(250);imgui.InputTextWithHint('##planName','Название сета',planNameBuffer,ffi.sizeof(planNameBuffer));imgui.PopItemWidth()
+    imgui.SameLine()
+    if imgui.Button('Переименовать')then
+        local name=cleanName(ffi.string(planNameBuffer),120)
+        if name then set.name=name;savePlans()else feedback='Название: до 120 байт, без управляющих символов и #.'end
+    end
+    do
+        imgui.TextColored(accent,'Добавить предмет вручную')
+        imgui.PushItemWidth(300);imgui.InputTextWithHint('##planItem','Название предмета',planItemBuffer,ffi.sizeof(planItemBuffer));imgui.PopItemWidth()
+        imgui.PushItemWidth(200);imgui.InputTextWithHint('##planPrice','Оценка цены за штуку',planPriceBuffer,ffi.sizeof(planPriceBuffer));imgui.PopItemWidth()
+        for _,currency in ipairs({'sa','vc'})do
+            if imgui.Button(currency..'##planCurrency')then planCurrency=currency end;imgui.SameLine()
+        end
+        imgui.NewLine();imgui.TextDisabled('Валюта: '..planCurrency..'. Твоя оценка, не рыночная котировка.')
+        if imgui.Button('Добавить в список')then
+            addToPlan({name=ffi.string(planItemBuffer),price=tonumber((ffi.string(planPriceBuffer):gsub('%s',''))),currency=planCurrency},'manual')
+        end
+    end
+    imgui.Spacing();imgui.Separator()
+    local removeIndex
+    imgui.Columns(5,'##setItems',true)
+    for _,name in ipairs({'Предмет','Оценка / шт.','Количество','Источник','Действия'})do imgui.Text(name);imgui.NextColumn()end
+    imgui.Separator()
+    for i,item in ipairs(set.items)do
+        imgui.TextWrapped(item.name);imgui.NextColumn()
+        imgui.Text(priceLabel(item.price,item.currency));imgui.NextColumn()
+        imgui.Text(tostring(item.quantity));imgui.NextColumn()
+        imgui.TextWrapped(item.source=='cache'and('База: '..item.updated)or'Твоя оценка');imgui.NextColumn()
+        if imgui.Button('-##quantity'..i)and item.quantity>1 then item.quantity=item.quantity-1;savePlans()end;imgui.SameLine()
+        if imgui.Button('+##quantity'..i)and item.quantity<999 then item.quantity=item.quantity+1;savePlans()end
+        if imgui.Button('Убрать##item'..i)then removeIndex=i end
+        imgui.NextColumn()
+    end
+    imgui.Columns(1)
+    if removeIndex then table.remove(set.items,removeIndex);savePlans()end
+    local totals=planTotals(set)
+    for _,currency in ipairs({'sa','vc'})do if totals[currency]then imgui.TextColored(accent,'Ориентир: '..priceLabel(totals[currency],currency))end end
+    for currency,value in pairs(totals)do if currency~='sa'and currency~='vc'then imgui.TextColored(accent,'Ориентир: '..priceLabel(value,currency))end end
+    if #set.items==0 then imgui.TextWrapped('Пока пусто. Добавь предмет из справочника или укажи свой.')end
+    imgui.TextDisabled('Валюты считаются отдельно. Сохранённые средние цены могут устареть.')
+    if imgui.Button('Скопировать список')then
+        if type(setClipboardText)=='function'then
+            local lines={set.name}
+            for _,item in ipairs(set.items)do lines[#lines+1]=item.name..' x'..item.quantity..' — '..string.format('%.0f',item.price*item.quantity)..' '..item.currency end
+            setClipboardText(cp(table.concat(lines,'\n')));feedback='Список скопирован.'
+        else feedback='Буфер обмена недоступен.'end
+    end
+    imgui.SameLine()
+    if imgui.Button(deletePlanArmed and 'Подтвердить удаление сета' or 'Удалить этот сет')then
+        if not deletePlanArmed then deletePlanArmed=true else
+            table.remove(plans.sets,plans.active)
+            if #plans.sets==0 then plans.sets={{name='Мой сет',items={}}}end
+            plans.active=math.min(plans.active,#plans.sets);planBufferIndex=nil;savePlans()
+        end
+    end
+end
+local function drawServers()
+    section('Серверы и очереди','Онлайн и очередь серверов. Обновление раз в минуту, пока открыт этот раздел.')
+    if imgui.Button(monitor.busy and 'Загрузка...' or 'Обновить')then defer(refreshServers)end
+    if monitor.received>0 then
+        local age=math.max(0,os.time()-monitor.received)
+        imgui.TextColored(age>120 and accent or quiet,'Получено: '..os.date('%d.%m %H:%M:%S',monitor.received)..' ('..math.floor(age/60)..' мин. назад)')
+        imgui.TextDisabled('Обновление у источника: '..monitor.sourceAge)
+    else imgui.TextDisabled('Список ещё не загружен. При недоступности источника повтори позже.')end
+    if monitor.error~=''then imgui.TextWrapped('Не обновлено: '..monitor.error)end
+    for _,row in ipairs(monitor.rows)do
+        if row.id==cfg.server then
+            imgui.TextColored(accent,'Твой сервер: '..row.name..' — '..row.online..'/'..row.capacity..'; очередь: '..row.queue)
+            break
+        end
+    end
+    imgui.PushItemWidth(240);imgui.InputTextWithHint('##serverFilter','Поиск сервера',serverFilter,ffi.sizeof(serverFilter));imgui.PopItemWidth()
+    imgui.SameLine();if imgui.Button(monitor.byQueue and 'Порядок: очередь' or 'Порядок: номер')then monitor.byQueue=not monitor.byQueue end
+    local filter=ffi.string(serverFilter):lower()
+    local rows={};for _,r in ipairs(monitor.rows)do if r.name:lower():find(filter,1,true)then rows[#rows+1]=r end end
+    table.sort(rows,function(a,b)if monitor.byQueue and a.queue~=b.queue then return a.queue>b.queue end return a.id<b.id end)
+    imgui.Separator();imgui.Columns(3,'##servers',true)
+    imgui.Text('Сервер');imgui.NextColumn();imgui.Text('Онлайн / мест');imgui.NextColumn();imgui.Text('Очередь');imgui.NextColumn();imgui.Separator()
+    for _,r in ipairs(rows)do
+        local label=(r.id==0 and 'VC' or r.id>=100 and 'M'..(r.id-100)or tostring(r.id))..'  '..r.name
+        if r.id==cfg.server then imgui.TextColored(accent,label)else imgui.Text(label)end
+        imgui.NextColumn();imgui.Text(r.online..' / '..r.capacity);imgui.NextColumn()
+        imgui.TextColored(r.queue>0 and accent or quiet,tostring(r.queue));imgui.NextColumn()
+    end
+    imgui.Columns(1);imgui.Separator();imgui.TextDisabled('Очередь сервера, а не твоя персональная позиция. Источники перечислены в сведениях о программе.')
+end
+
+local function openArzPriceTable()
+    tab=12;opened[0]=true;return true
+end
+local function registerArzAlias()
+    return boot:command('crrhh',function()
+        if boot.mainError then boot:chat('Основной цикл остановлен. Пришли SHEVA_Helper-startup.log.');return end
+        defer(openArzPriceTable)
+    end)
+end
+local function makePriceArchive()
+ local A={server=nil,sides={},rows={},page=1,sort='name',filter=nil,filtered={},error='',seq=0,loading=false,selected=nil}
+ local prefix='https://raw.githubusercontent.com/FREYM1337/forumnick/main/avg_price/info_users_'
+ local function slug(id)
+  local name=servers[id+1];if not name then return nil end
+  if id==0 then return 'vc'end
+  if name=='Saint-Rose'then return 'saintrose'end
+  return name:lower()
+ end
+ local function money(n)return type(n)=='number'and n==n and n>=0 and n<=1e15 end
+ local function isUtf8(s)
+  local i=1
+  while i<=#s do
+   local c=s:byte(i);local n=c<128 and 0 or(c>=194 and c<=223 and 1 or(c>=224 and c<=239 and 2 or(c>=240 and c<=244 and 3 or -1)))
+   if n<0 or i+n>#s then return false end
+   for j=1,n do local v=s:byte(i+j);if v<128 or v>191 then return false end end
+   if n==2 and(c==224 and s:byte(i+1)<160 or c==237 and s:byte(i+1)>159)then return false end
+   if n==3 and(c==240 and s:byte(i+1)<144 or c==244 and s:byte(i+1)>143)then return false end
+   i=i+n+1
+  end
+  return true
+ end
+ function A:parse(raw)
+  if type(raw)~='string'then return nil,'Файл архива не удалось прочитать'end
+  if #raw>12*1024*1024 then return nil,'Превышен размер архива'end
+  if not isUtf8(raw)then
+   local ok,value=pcall(function()return encoding.UTF8:encode(raw,'CP1251')end)
+   if not ok or type(value)~='string'then return nil,'Не удалось прочитать кодировку архива'end
+   raw=value
+  end
+  local ok,data=pcall(decodeJson,raw)
+  if not ok or type(data)~='table'then return nil,'Ответ источника не является JSON'end
+  local out,count={},0
+  for name,item in pairs(data)do
+   if type(name)=='string'and #name>0 and #name<=240 and not name:find('[%c]')and type(item)=='table'and type(item.list)=='table'then
+    local history,seen={},{}
+    for _,day in ipairs(item.list)do
+     if type(day)=='table'and type(day[1])=='string'and day[1]:match('^%d%d%d%d%-%d%d%-%d%d$')and money(day[5])and not seen[day[1]]then
+      local year,month,date=day[1]:match('^(%d+)%-(%d+)%-(%d+)$')
+      year,month,date=tonumber(year),tonumber(month),tonumber(date)
+      local leap=year%4==0 and(year%100~=0 or year%400==0)
+      local days={31,leap and 29 or 28,31,30,31,30,31,31,30,31,30,31}
+      if year>=2000 and year<=2100 and month>=1 and month<=12 and date>=1 and date<=days[month]then
+       seen[day[1]]=true;history[#history+1]={date=day[1],price=day[5]}
+      end
+     end
+    end
+    table.sort(history,function(a,b)return a.date>b.date end)
+    if #history>0 then
+     while #history>90 do history[#history]=nil end
+     out[name]={price=history[1].price,date=history[1].date,history=history};count=count+1
+     if count>20000 then return nil,'Слишком много предметов в архиве'end
+    end
+   end
+  end
+  if count==0 then return nil,'В ответе нет корректных записей цен'end
+  return out
+ end
+ local function read(path)
+  local f=io.open(path,'rb');if not f then return end;local raw=f:read(12*1024*1024+1);f:close();return raw
+ end
+ function A:rebuild()
+  local merged={}
+  for _,side in ipairs({'buy','sell'})do
+   for name,value in pairs(self.sides[side]or{})do
+    local row=merged[name]or{name=name,key=priceFold(name)};merged[name]=row;row[side]=value
+   end
+  end
+  self.rows={};self.latest=''
+  for _,row in pairs(merged)do
+   if row.buy and row.sell and row.buy.date==row.sell.date then row.gap=row.sell.price-row.buy.price end
+   row.updated=(row.buy and row.buy.date or '')>(row.sell and row.sell.date or '')and row.buy.date or(row.sell and row.sell.date or '')
+   if row.updated>self.latest then self.latest=row.updated end
+   row.upgrade=tonumber(row.name:match('%(%+(%d+)%)$'))or 0
+   self.rows[#self.rows+1]=row
+  end
+  self.filter=nil;self.selected=nil
+ end
+ function A:open(id,refresh)
+  local tag=slug(id);if not tag then self.error='Нет архива для этого сервера';return end
+  if self.server==id and not refresh then return end
+  if self.loading and self.server==id then return end
+  self.seq=self.seq+1;local generation=self.seq
+  self.server=id;self.loading=true;self.pending={};self.error='';self.started=os.time()
+  if not refresh then
+   self.sides={}
+   for _,side in ipairs({'buy','sell'})do
+    local raw=read(root..'/archive_'..tag..'_'..side..'.json')
+    if raw then self.sides[side]=self:parse(raw)end
+   end
+   self:rebuild()
+  end
+  for _,side in ipairs({'buy','sell'})do
+   local record={side=side,target=root..'/archive_'..tag..'_'..side..'.json'}
+   record.temp=record.target..'.download.'..generation;self.pending[#self.pending+1]=record
+   local ok,err=pcall(downloadUrlToFile,prefix..side..'_'..tag..'.json',record.temp,function(_,status)
+    if status==moonloader.download_status.STATUSEX_ENDDOWNLOAD then
+     if self.seq~=generation or record.done then os.remove(record.temp)else record.ready=true end
+    end
+   end)
+   if not ok then record.done=true;self.error='Не запущена загрузка: '..tostring(err)end
+  end
+ end
+ function A:poll()
+  if not self.loading then return end
+  local remaining=false;local changed=false
+  for _,record in ipairs(self.pending)do
+   if not record.done and record.ready then
+    record.done=true
+    local raw=read(record.temp);local data,err=self:parse(raw)
+    if data then
+     self.sides[record.side]=data;changed=true
+     local previous=record.target..'.previous';os.remove(previous)
+     local existing=io.open(record.target,'rb');local had=existing~=nil;if existing then existing:close()end
+     local moved=not had or os.rename(record.target,previous)
+     if moved and os.rename(record.temp,record.target)then os.remove(previous)
+     else
+      if moved and had then os.rename(previous,record.target)end
+      os.remove(record.temp);self.error='Архив загружен, но не сохранён на диск'
+     end
+    else os.remove(record.temp);self.error=record.side..': '..tostring(err)end
+   elseif not record.done and os.time()-self.started>=45 then
+    record.done=true;os.remove(record.temp);self.error='Источник не ответил за 45 секунд. Показан доступный кэш.'
+   end
+   if not record.done then remaining=true end
+  end
+  self.loading=remaining;if changed then self:rebuild()end
+ end
+ function A:query(text)
+  local filter=priceFold(text)
+  if self.filter~=filter or self.lastSort~=self.sort then
+   self.filter=filter;self.lastSort=self.sort;self.page=1;self.filtered={}
+   for _,row in ipairs(self.rows)do if filter==''or row.key:find(filter,1,true)then self.filtered[#self.filtered+1]=row end end
+   table.sort(self.filtered,function(a,b)
+    if self.sort=='gap'and a.gap~=b.gap then
+     if a.gap==nil then return false end;if b.gap==nil then return true end;return a.gap>b.gap
+    end
+    return a.key<b.key
+   end)
+  end
+  return self.filtered
+ end
+ A.slug=slug
+ return A
+end
+local priceArchive=makePriceArchive()
+local archiveQuery=imgui.new.char[256]()
+local archiveSearchFocus=false
+local function drawArchiveSearch()
+ imgui.TextColored(accent,'Поиск по названию предмета')
+ if imgui.Button('Ввести название##archiveFocus')then archiveSearchFocus=true end
+ imgui.SameLine()
+ if imgui.Button('Очистить##archiveClear')then ffi.fill(archiveQuery,ffi.sizeof(archiveQuery),0);archiveSearchFocus=true end
+ local dark=cfg.themeMode=='dark'
+ imgui.PushStyleColor(imgui.Col.FrameBg,dark and imgui.ImVec4(0.055,0.14,0.11,1)or imgui.ImVec4(1,1,1,1))
+ imgui.PushStyleColor(imgui.Col.FrameBgHovered,dark and imgui.ImVec4(0.08,0.23,0.17,1)or imgui.ImVec4(0.91,0.97,0.94,1))
+ imgui.PushStyleColor(imgui.Col.FrameBgActive,dark and imgui.ImVec4(0.10,0.28,0.21,1)or imgui.ImVec4(0.84,0.94,0.89,1))
+ imgui.PushStyleColor(imgui.Col.Text,dark and imgui.ImVec4(0.94,0.99,0.96,1)or imgui.ImVec4(0.035,0.13,0.08,1))
+ imgui.PushItemWidth(math.max(120,math.min(480,imgui.GetContentRegionAvail().x-12)))
+ if archiveSearchFocus then imgui.SetKeyboardFocusHere();archiveSearchFocus=false end
+ -- Use the basic binding with explicit flags; keep one stable ID and one persistent char buffer.
+ local ok,changed=boot:run('archive-input',function()return imgui.InputText('##archiveQuery',archiveQuery,ffi.sizeof(archiveQuery),0)end)
+ local active=imgui.IsItemActive()==true
+ imgui.PopItemWidth();imgui.PopStyleColor(4)
+ if active then boot.textInputActive=true end
+ if not ok then
+  imgui.TextWrapped('Ошибка поля поиска записана в SHEVA_Helper-startup.log. Меню остаётся открытым.')
+ elseif ffi.string(archiveQuery)==''and not active then imgui.TextColored(quiet,'Нажми поле или «Ввести название», затем набери название. Поиск сразу фильтрует список.')end
+ return ok and changed==true
+end
+local function drawArzTable()
+ section('Таблица цен SHEVA_Helper','История записей источника. Это архив, а не предложения активных лавок. Все суммы — игровые $.')
+ imgui.TextColored(quiet,'Серверы — выбери нужный')
+ local columns=math.max(1,math.floor(imgui.GetContentRegionAvail().x/112))
+ for index,name in ipairs(servers)do
+  if cfg.server==index-1 then imgui.PushStyleColor(imgui.Col.Button,imgui.ImVec4(0.50,0.78,0.81,1))end
+  if imgui.Button(name..'##archiveServer'..index,imgui.ImVec2(102,28))then
+   local selected=index-1;defer(function()cfg.server=selected;save();priceArchive:open(selected)end)
+  end
+  if cfg.server==index-1 then imgui.PopStyleColor()end
+  if index%columns~=0 and index<#servers then imgui.SameLine()end
+ end
+ if priceArchive.server~=cfg.server then defer(function()priceArchive:open(cfg.server)end)end
+ imgui.TextColored(accent,'Сервер: '..servers[cfg.server+1]..' / предметов: '..#priceArchive.rows)
+ if imgui.Button(priceArchive.loading and 'Загрузка архива...'or 'Обновить архив')and not priceArchive.loading then defer(function()priceArchive:open(cfg.server,true)end)end
+ imgui.SameLine();if imgui.Button(priceArchive.sort=='name'and 'Сортировка: название'or 'Сортировка: разница')then priceArchive.sort=priceArchive.sort=='name'and'gap'or'name'end
+ boot.guiStage='archive-search';drawArchiveSearch();boot.guiStage='archive-table'
+ if priceArchive.error~=''then imgui.TextWrapped(priceArchive.error)end
+ if priceArchive.latest and priceArchive.latest~=''then imgui.TextColored(accent,'Последняя запись в архиве: '..priceArchive.latest..'. Сверяй дату — это не цена на сегодня.')end
+ local rows=priceArchive:query(ffi.string(archiveQuery));local pages=math.max(1,math.ceil(#rows/50))
+ if imgui.Button('Назад##archive')then priceArchive.page=math.max(1,priceArchive.page-1)end;imgui.SameLine()
+ imgui.Text(priceArchive.page..' / '..pages..' · найдено '..#rows);imgui.SameLine()
+ if imgui.Button('Далее##archive')then priceArchive.page=math.min(pages,priceArchive.page+1)end
+ imgui.Columns(6,'##archiveTable',true)
+ for _,header in ipairs({'Предмет','Заточка','Покупки','Продажи','Разница','Дата'})do imgui.Text(header);imgui.NextColumn()end
+ imgui.Separator()
+ local first=(priceArchive.page-1)*50+1
+ for index=first,math.min(first+49,#rows)do
+  local row=rows[index]
+  if imgui.Selectable(row.name..'##arc'..index,priceArchive.selected==row)then priceArchive.selected=row end;imgui.NextColumn()
+  imgui.Text('+'..row.upgrade);imgui.NextColumn()
+  imgui.Text(row.buy and string.format('%.0f',row.buy.price)or '—');imgui.NextColumn()
+  imgui.Text(row.sell and string.format('%.0f',row.sell.price)or '—');imgui.NextColumn()
+  imgui.Text(row.gap and string.format('%.0f',row.gap)or '—');imgui.NextColumn()
+  imgui.Text(row.updated);imgui.NextColumn()
+ end
+ imgui.Columns(1);imgui.Separator()
+ local selected=priceArchive.selected
+ if selected then
+  imgui.TextColored(accent,selected.name..' — история, до 90 записей')
+  for _,side in ipairs({'buy','sell'})do
+   local record=selected[side]
+   if record then
+    local history=record.history;local points=ffi.new('float[?]',#history)
+    for i=1,#history do points[i-1]=history[#history-i+1].price end
+    imgui.PlotLines(side=='buy'and 'Покупки##history'or 'Продажи##history',points,#history,0,nil,nil,nil,imgui.ImVec2(-1,110))
+    imgui.TextDisabled(history[#history].date..' → '..history[1].date..' / '..#history..' записей (не календарных дней)')
+   end
+  end
+ end
+ imgui.TextWrapped('Разница считается только для записей одной даты. Это не гарантированная прибыль. Источник: открытый архив FREYM1337/forumnick; сведения об авторах сохранены.')
+end
+
+
+-- Updates use a publisher-controlled HTTPS manifest. No remote Lua is evaluated.
+local releaseVersion=boot.version
+local defaultManifestUrl='https://raw.githubusercontent.com/xromxgame-lgtm/-/shva-updates/SHVA_Helper/manifest.json'
+local updater={state='Ожидание проверки обновлений.',busy=false,available=false,seq=0,lastCheck=0}
+local function readFile(path,limit)
+ local f=io.open(path,'rb');if not f then return nil end;local d=f:read(limit and(limit+1)or '*a');f:close();return d
+end
+local function sha256(data)
+ local bit=require 'bit'
+ local band,bxor,bnot,ror,rshift=bit.band,bit.bxor,bit.bnot,bit.ror,bit.rshift
+ local K={0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2}
+ local H={0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19}
+ local bits=#data*8
+ data=data..'\128'..string.rep('\0',(55-#data)%64)..string.char(0,0,0,0,band(rshift(bits,24),255),band(rshift(bits,16),255),band(rshift(bits,8),255),band(bits,255))
+ for pos=1,#data,64 do
+  local w={}
+  for i=0,15 do local a,b,c,d=data:byte(pos+i*4,pos+i*4+3);w[i]=a*16777216+b*65536+c*256+d end
+  for i=16,63 do local a,b=w[i-15],w[i-2];w[i]=bit.tobit(w[i-16]+bxor(ror(a,7),ror(a,18),rshift(a,3))+w[i-7]+bxor(ror(b,17),ror(b,19),rshift(b,10)))end
+  local a,b,c,d,e,f,g,h=unpack(H)
+  for i=0,63 do
+   local t=bit.tobit(h+bxor(ror(e,6),ror(e,11),ror(e,25))+bxor(band(e,f),band(bnot(e),g))+K[i+1]+w[i])
+   local u=bit.tobit(bxor(ror(a,2),ror(a,13),ror(a,22))+bxor(band(a,b),band(a,c),band(b,c)))
+   h,g,f,e,d,c,b,a=g,f,e,bit.tobit(d+t),c,b,a,bit.tobit(t+u)
+  end
+  local v={a,b,c,d,e,f,g,h};for i=1,8 do H[i]=bit.tobit(H[i]+v[i])end
+ end
+ local out={};for i=1,8 do out[i]=bit.tohex(H[i])end;return table.concat(out)
+end
+local function httpsOrigin(url)
+ if type(url)~='string'or #url>2048 or url:find('[%s%c]')then return nil end
+ return url:match('^(https://[%w%.%-]+)[:/]')
+end
+local function versionParts(v)
+ if type(v)~='string' or #v>80 then return nil end
+ local a,b,c=v:match('^(%d+)%.(%d+)%.(%d+)[%w%.%-]*$')
+ if not a then return nil end
+ return {tonumber(a),tonumber(b),tonumber(c)}
+end
+local function newer(v)
+ local candidate,current=versionParts(v),versionParts(releaseVersion)
+ if not candidate then return false end
+ for i=1,3 do if candidate[i]~=current[i]then return candidate[i]>current[i]end end
+ return false
+end
+local function beginUpdateDownload(url,kind)
+ if updater.busy then return end
+ updater.seq=updater.seq+1;local seq=updater.seq
+ updater.busy=true;updater.kind=kind;updater.done=false;updater.started=os.time()
+ updater.path=root..'/update-'..kind..'-'..seq..'.tmp'
+ local path=updater.path;os.remove(path)
+ local ok,err=pcall(downloadUrlToFile,url,updater.path,function(_,status)
+  if status==moonloader.download_status.STATUSEX_ENDDOWNLOAD then
+   if updater.seq==seq and updater.busy then updater.done=true else os.remove(path)end
+  end
+ end)
+ if not ok then updater.busy=false;updater.state='Не удалось начать загрузку.';log(tostring(err))end
+end
+local function checkUpdates()
+ if updater.busy then return end
+ if type(downloadUrlToFile)~='function'then updater.state='В этой сборке MoonLoader загрузка недоступна.';return end
+ if os.time()-updater.lastCheck<30 then return end
+ updater.lastCheck=os.time()
+ local raw=readFile(root..'/updates.json');local ok,d=pcall(decodeJson,raw or '')
+ local url=defaultManifestUrl
+ if raw then
+  if not ok or type(d)~='table'or not httpsOrigin(d.manifestUrl)then updater.state='Некорректный updates.json. Проверь адрес источника.';return end
+  url=d.manifestUrl
+ end
+ updater.origin=httpsOrigin(url);updater.available=false
+ updater.state='Проверяем новую версию…';beginUpdateDownload(url,'manifest')
+end
+
+local bundlePaths={['SHVA_Helper.lua']=true,['Cripto_Shewa/module_host.lua']=true,['Cripto_Shewa/assets/space_city.png']=true}
+for _,m in ipairs(modules)do bundlePaths['Cripto_Shewa/modules/'..m.id..'.lua']=true end
+local function validateBundle(m)
+ if type(m.files)~='table'or #m.files<1 or #m.files>11 then return false end
+ local seen={};local total=0
+ for _,file in ipairs(m.files)do
+  if type(file)~='table'or not bundlePaths[file.path]or seen[file.path]or httpsOrigin(file.url)~=updater.origin
+   or type(file.sha256)~='string'or #file.sha256~=64 or file.sha256:find('[^%x]')
+   or type(file.size)~='number'or file.size<1 or file.size>16777216 or file.size~=math.floor(file.size)then return false end
+  seen[file.path]=true;total=total+file.size
+ end
+ return seen['SHVA_Helper.lua']and total<=33554432
+end
+local function bundleTarget(path)
+ if path=='SHVA_Helper.lua'then return thisScript().path end
+ return getWorkingDirectory()..'/'..path
+end
+local function writeUpdateFile(path,data)
+ local f=io.open(path,'wb');if not f then return false end
+ local ok=f:write(data);local closed=f:close();return ok~=nil and closed~=nil
+end
+local function commitBundle()
+ local files=updater.bundle.files;local completed={}
+ -- Stage and back up every file before replacing anything.
+ for i,file in ipairs(files)do
+  local target=bundleTarget(file.path);local previous=readFile(target,16777216)
+  if previous and #previous>16777216 then updater.state='Прежний файл слишком большой. Обновление отменено.';return end
+  local entry={target=target,old=previous};completed[#completed+1]=entry
+  if previous and not writeUpdateFile(target..'.bak',previous)then updater.state='Не удалось сохранить копии комплекта. Ничего не заменено.';return end
+  if not writeUpdateFile(target..'.new',updater.bundle.data[i])then updater.state='Не удалось подготовить комплект. Ничего не заменено.';return end
+ end
+ local changed={}
+ for _,entry in ipairs(completed)do
+  local ok=true
+  if entry.old then
+   os.remove(entry.target..'.previous');ok=os.rename(entry.target,entry.target..'.previous')
+  end
+  if ok then
+   changed[#changed+1]=entry
+   ok=os.rename(entry.target..'.new',entry.target)
+  end
+  if not ok then
+   local recovered=true
+   for i=#changed,1,-1 do
+    local old=changed[i]
+    os.remove(old.target)
+    if old.old and not os.rename(old.target..'.previous',old.target)then recovered=false end
+   end
+   updater.state=recovered and 'Установка комплекта отменена; прежние файлы восстановлены.'or'Ошибка восстановления комплекта. Закрой игру и восстанови файлы из .bak.'
+   updater.available=false;return
+  end
+ end
+ for _,entry in ipairs(completed)do os.remove(entry.target..'.previous');os.remove(entry.target..'.new')end
+ updater.available=false;updater.bundle=nil
+ updater.state='Комплект обновлён. Полностью перезапусти игру для применения.'
+end
+local function downloadBundleFile()
+ local batch=updater.bundle
+ local file=batch.files[batch.index]
+ updater.state='Обновление комплекта: '..batch.index..' / '..#batch.files..' — '..file.path
+ beginUpdateDownload(file.url,'bundle')
+end
+local function installUpdate()
+ if not updater.available or updater.busy then return end
+ if updater.manifest.files then
+  updater.bundle={files=updater.manifest.files,index=1,data={}};downloadBundleFile();return
+ end
+ updater.state='Загружаем '..updater.manifest.version..'…'
+ beginUpdateDownload(updater.manifest.url,'script')
+end
+local function pollUpdates()
+ if not updater.busy then return end
+ if os.time()-updater.started>30 then updater.busy=false;updater.seq=updater.seq+1;updater.state='Сервер обновлений не ответил. Попробуй позже.';return end
+ if not updater.done then return end
+ updater.busy=false
+ local limit=updater.kind=='bundle'and 16777216 or 2097152
+ local data=readFile(updater.path,limit);os.remove(updater.path)
+ if not data or #data==0 or #data>limit then updater.state='Получен пустой или слишком большой файл.';return end
+ if updater.kind=='manifest'then
+  local ok,m=pcall(decodeJson,data)
+  if ok and type(m)=='table'and m.files and m.bundleVersion then m.version=m.bundleVersion end
+  local valid=ok and type(m)=='table'and versionParts(m.version)
+  if valid then
+   if m.files then valid=validateBundle(m)
+   else valid=type(m.sha256)=='string'and #m.sha256==64 and not m.sha256:find('[^%x]')and httpsOrigin(m.url)==updater.origin end
+  end
+  if not valid then updater.state='Некорректный файл версии.';return end
+  if not newer(m.version)then updater.state='Новой версии нет. Установлено: '..releaseVersion..'. Источник: '..m.version;return end
+  updater.manifest=m;updater.available=true;updater.state='Доступна новая версия: '..m.version
+  say('Доступно обновление '..m.version..'. Кнопка — в настройках SHEVA_Helper.')
+ elseif updater.kind=='bundle'then
+  local batch=updater.bundle;local file=batch.files[batch.index]
+  local ok,hash=pcall(sha256,data)
+  if not ok or #data~=file.size or hash~=file.sha256:lower()then updater.state='Комплект повреждён. Установленные файлы не изменены.';updater.bundle=nil;return end
+  if file.path:match('%.lua$')and not loadstring(data,'update/'..file.path)then updater.state='Ошибка Lua в комплекте. Файлы не изменены.';updater.bundle=nil;return end
+  batch.data[batch.index]=data;batch.index=batch.index+1
+  if batch.index>#batch.files then commitBundle()else downloadBundleFile()end
+ else
+  local ok,hash=pcall(sha256,data)
+  if not ok or hash~=updater.manifest.sha256:lower()then updater.state='Проверка SHA-256 не пройдена. Скрипт не изменён.';return end
+  if not loadstring(data,'SHEVA_Helper update')then updater.state='В обновлении ошибка Lua. Скрипт не изменён.';return end
+  local target=thisScript().path
+  local old=readFile(target);if not old then updater.state='Не удалось прочитать текущий скрипт.';return end
+  local function write(path,bytes)local f=io.open(path,'wb');if not f then return false end;local ok=f:write(bytes);local closed=f:close();return ok~=nil and closed~=nil end
+  if not write(target..'.bak',old)or not write(target..'.new',data)then updater.state='Не удалось сохранить резервную копию или обновление.';return end
+  local previous=target..'.previous';os.remove(previous)
+  local moved=os.rename(target,previous)
+  if not moved then updater.state='Не удалось заменить файл. Обновление отменено.';return end
+  local installed=os.rename(target..'.new',target)
+  if not installed then
+   local restored=os.rename(previous,target)
+   if restored then updater.state='Замена отменена; восстановлена предыдущая версия.'
+   else updater.available=false;updater.state='Не удалось восстановить файл. Закрой игру и восстанови SHVA_Helper.lua из .bak.';log('Update rollback failed: '..target)end
+   return
+  end
+  os.remove(previous);updater.available=false;updater.state='Обновление установлено. Перезапусти игру для применения.'
+ end
+end
+
+-- Payday journal: passive server-message accounting; no outgoing game actions.
+local function makePaydayJournal(options)
+ local J={contexts={},current=nil,pending={},toasts={},error='',period='today',page=1,hooks=false}
+ local function contains(s,part)return s:find(part,1,true)~=nil end
+ local function clip(s,n)
+  if #s<=n then return s end
+  while n>0 do local nextByte=s:byte(n+1);if not nextByte or nextByte<128 or nextByte>191 then break end;n=n-1 end
+  return s:sub(1,n)
+ end
+ local function normalize(raw)
+  if type(raw)~='string'or #raw>8192 then return end
+  local s=options.normalize and options.normalize(raw)or raw
+  s=s:gsub('{%x%x%x%x%x%x%x%x}',''):gsub('{%x%x%x%x%x%x}',''):gsub('^%[%d%d:%d%d:%d%d%]%s*',''):gsub('\194\160',' '):gsub('[\r\n\t]',' '):gsub('%s+',' '):match('^%s*(.-)%s*$')
+  if #s==0 or #s>2048 then return end
+  return s
+ end
+ local function playerMessage(s)
+  return contains(s,'[sHEVA')or contains(s,'[sheva_helper]')or contains(s,'[vip')or contains(s,'[premium]')or contains(s,'[forever]')or contains(s,'[реклама]')or contains(s,'[news')or contains(s,'[новости]')or contains(s,'[семья]')or contains(s,'[альянс]')or contains(s,'говорит:')or contains(s,'кричит:')or contains(s,'шепчет:')or s:match('[%w_]+%[%d+%]%s*:')~=nil
+ end
+ local function number(raw)
+  raw=raw:gsub('^%s+',''):gsub('%s+$',''):gsub('[.,]+$','')
+  if raw:find('[., ]')then
+   local grouped=raw:gsub(' +',' ')
+   local sep=grouped:match('(%D)')
+   if not sep then return end
+   local separators=grouped:gsub('%d','');if separators:gsub('%'..sep,'')~=''then return end
+   local chunks={};for n in grouped:gmatch('%d+')do chunks[#chunks+1]=n end
+   if #chunks<2 or #chunks[1]>3 then return end
+   for i=2,#chunks do if #chunks[i]~=3 then return end end
+   raw=table.concat(chunks)
+  end
+  if not raw:match('^%d+$')then return end
+  local n=tonumber(raw);if n and n>=0 and n<=1000000000000 then return n end
+ end
+ local function money(s)
+  local candidates={}
+  for raw in s:gmatch('%$%s*([%d][%d%., ]*)')do local n=number(raw);if n then candidates[#candidates+1]=n end end
+  if #candidates==0 then for raw in s:gmatch('([%d][%d%., ]*)%s*%$')do local n=number(raw);if n then candidates[#candidates+1]=n end end end
+  -- Multiple balances/amounts need an explicit server format; never guess a sum.
+  if #candidates==1 then return candidates[1]end
+ end
+ function J:parse(raw,source)
+  local text=normalize(raw);if not text then return end
+  local low=options.fold(text);if playerMessage(low)or contains(low,'не начислен')or contains(low,'не выплачен')or contains(low,'не удалось')or contains(low,'вы не получили')then return end
+  local awarded=contains(low,'вам начислен')or contains(low,'вы получили')or contains(low,'вам выдан')or contains(low,'вам выплачен')or contains(low,'начислено')or contains(low,'начислены')or contains(low,'зачислен')or contains(low,'выплачена')or contains(low,'получен предмет')or contains(low,'получена награда')
+  local sent=contains(low,'отправлен')or contains(low,'помещен')or contains(low,'помещён')or contains(low,'перемещен')or contains(low,'перемещён')or contains(low,'добавлен')
+  local storage=contains(low,'хранилищ')or contains(low,'storage')or contains(low,'сторадж')or contains(low,'на склад')or contains(low,'на ваш склад')or contains(low,'в ваш склад')
+  local field=contains(low,':')
+  local e={raw=text,source=source or'chat'}
+  local payday=contains(low,'payday')or contains(low,'пейдей')or contains(low,'банковский чек')
+  if payday and not contains(low,'кейс')and not contains(low,'бокс')and not contains(low,'предмет')and not contains(low,'зарплат')and not contains(low,'депозит')then e.kind='payday';return e end
+  if contains(low,'депозит')and(contains(low,'процент')or contains(low,'доход')or contains(low,'прибыл'))and(awarded or field)then
+   e.kind='deposit';e.amount=money(low);return e
+  end
+  if contains(low,'зарплат')or contains(low,'заработная плата')then
+   if awarded or low:match('^зарплата[^:]*:')or low:match('^%[[^%]]+%]%s*зарплата[^:]*:')or low:match('^заработная плата%s*:')then
+    e.kind=(contains(low,'организац')or contains(low,'фракц'))and'salary_org'or'salary';e.amount=money(low);return e
+   end
+  end
+  local itemWord=contains(low,'кейс')or contains(low,'бокс')or contains(low,'предмет')or contains(low,'награда')or contains(low,'case')or contains(low,'box')
+  if (awarded and itemWord)or(storage and sent)then
+   e.kind='item';e.destination=storage and'storage'or'unspecified'
+   e.quantity=tonumber(low:match('x%s*(%d+)%s*$')or low:match('х%s*(%d+)%s*$')or low:match('(%d+)%s*шт%.?')or low:match('количество%s*:%s*(%d+)'))
+   if e.quantity and(e.quantity<1 or e.quantity>1000000)then e.quantity=nil end
+   local begin,finish=low:find('предмет%s*:%s*')
+   if not finish then begin,finish=low:find('награда%s*:%s*')end
+   local name=finish and text:sub(finish+1)or text:match(':%s*(.+)')
+   if not name then
+    for _,word in ipairs({'кейс','бокс','case','box'})do local i=low:find(word,1,true);if i then name=text:sub(i);break end end
+   end
+   if name then
+    local folded=options.fold(name)
+    for _,suffix in ipairs({'. он отправлен',' был отправлен',' была отправлена',' отправлен в ',' отправлен на ',' в хранилище',' на склад'})do
+     local i=folded:find(suffix,1,true);if i then name=name:sub(1,i-1);folded=options.fold(name)end
+    end
+    name=name:gsub('%s+x%s*%d+%s*$',''):gsub('%s+х%s*%d+%s*$',''):gsub('%s+%d+%s*шт%.?%s*$','')
+    e.item=clip(name,180)
+   end
+   return e
+  end
+  if awarded and(contains(low,'премия')or contains(low,'бонус')or contains(low,'денежная награда'))then e.kind='bonus';e.amount=money(low);return e end
+  if storage or payday then e.kind='notice';return e end
+ end
+ local kinds={payday=true,deposit=true,salary_org=true,salary=true,item=true,bonus=true,notice=true}
+ function J:bind()
+  local ok,id=pcall(options.owner)
+  if not ok or type(id)~='string'or id==''or #id>160 then self.current=nil;return end
+  local ctx=self.contexts[id]
+  if not ctx then
+   ctx={owner=id,path=options.path(id),events={},recent={},nextId=0,dirty=false,lastSave=0};self.contexts[id]=ctx
+   local data=options.read(ctx.path)
+   if type(data)=='table'and data.schema==1 and data.owner==id and type(data.events)=='table'then
+    for i=math.max(1,#data.events-399),#data.events do
+     local e=data.events[i]
+     if type(e)=='table'and kinds[e.kind]and type(e.ts)=='number'and e.ts>0 and e.ts<=options.now()+86400 and type(e.raw)=='string'and #e.raw<=2048 and(type(e.amount)=='nil'or(type(e.amount)=='number'and e.amount>=0 and e.amount<=1000000000000 and e.amount==math.floor(e.amount)))then
+      e.id=tonumber(e.id)or 0;e.item=type(e.item)=='string'and clip(e.item,180)or nil
+      e.quantity=type(e.quantity)=='number'and e.quantity>=1 and e.quantity<=1000000 and e.quantity==math.floor(e.quantity)and e.quantity or nil
+      e.source=e.source=='cef'and'cef'or(e.source=='dialog'and'dialog'or'chat');e.destination=e.destination=='storage'and'storage'or'unspecified'
+      ctx.events[#ctx.events+1]=e;ctx.nextId=math.max(ctx.nextId,e.id)
+      ctx.recent[options.fold(e.raw)]=e.ts
+     end
+    end
+   end
+  end
+  if self.current~=ctx then self.page=1;self.toasts={}end
+  self.current=ctx
+ end
+ function J:ingest(raw,source)
+  local e=self:parse(raw,source);if not e then return false end
+  self:bind()
+  if not self.current then
+   -- Until account identity is known, do not attribute messages to another account.
+   return false
+  end
+  local ctx=self.current;local now=options.now();local fingerprint=options.fold(e.raw)
+  local previous=ctx.recent[fingerprint]
+  if previous and now>=previous and now-previous<8 then return false end
+  ctx.recent[fingerprint]=now
+  if #ctx.events>=400 then table.remove(ctx.events,1);ctx.recent={};ctx.recent[fingerprint]=now end
+  e.id=ctx.nextId+1;ctx.nextId=e.id;e.ts=now;e.raw=clip(e.raw,1024)
+  ctx.events[#ctx.events+1]=e;ctx.dirty=true
+  if options.emit then pcall(options.emit,e,ctx.owner)end
+  if e.kind~='notice'and e.kind~='payday'then
+   self.toasts[#self.toasts+1]={owner=ctx.owner,text=e.raw,kind=e.kind,ts=now}
+   if #self.toasts>8 then table.remove(self.toasts,1)end
+  end
+  return true,e
+ end
+ function J:poll()
+  self:bind()
+  local now=options.now()
+  for _,ctx in pairs(self.contexts)do
+   if ctx.dirty and now-ctx.lastSave>=5 then
+    ctx.lastSave=now
+    local called,ok,err=pcall(options.write,ctx.path,{schema=1,owner=ctx.owner,events=ctx.events})
+    if not called then err=ok;ok=false end
+    if ok then ctx.dirty=false;ctx.error=nil else ctx.error=tostring(err or'Ошибка сохранения журнала')end
+   end
+  end
+  self.error=self.current and(self.current.error or'')or''
+ end
+ function J:flush()
+  for _,ctx in pairs(self.contexts)do if ctx.dirty then ctx.lastSave=-math.huge end end
+  self:poll()
+ end
+ function J:rows(period)
+  local rows={};local from=0;local now=options.now()
+  if period=='today'then local t=os.date('*t',now);t.hour=0;t.min=0;t.sec=0;from=os.time(t)
+  elseif period=='week'then from=now-7*86400 end
+  if self.current then for i=#self.current.events,1,-1 do local e=self.current.events[i];if e.ts>=from then rows[#rows+1]=e end end end
+  return rows
+ end
+ function J:totals(period)
+  local totals={salary_org=0,salary=0,deposit=0,bonus=0,items=0,unpriced=0}
+  for _,e in ipairs(self:rows(period))do
+   if e.kind=='item'then totals.items=totals.items+1
+   elseif totals[e.kind]~=nil then if e.amount~=nil then totals[e.kind]=totals[e.kind]+e.amount else totals.unpriced=totals.unpriced+1 end end
+  end
+  return totals
+ end
+ -- Decode only JSON notification arguments. Never evaluate received JavaScript.
+ function J:cef(code)
+  if type(code)~='string'or #code>65536 then return false end
+  if options.normalize then code=options.normalize(code)end
+  if type(code)~='string'or #code>65536 then return false end
+  local tail=code:match('event%.notify%.initialize["\'`]%s*,%s*(.+)')
+  if not tail then return false end
+  local first=tail:sub(1,1);local payload
+  if first=='"'or first=='\''or first=='`'then
+   local escaped=false;local finish
+   for i=2,#tail do local c=tail:sub(i,i);if not escaped and c==first then finish=i;break end;if c=='\\'and not escaped then escaped=true else escaped=false end end
+   if not finish then return false end
+   if first=='"'then local ok,value=pcall(options.decode,tail:sub(1,finish));if not ok or type(value)~='string'then return false end;payload=value
+   else payload=tail:sub(2,finish-1)end
+  else return false end
+  local ok,args=pcall(options.decode,payload)
+  if not ok or type(args)~='table'then return false end
+  if args[1]=='error'or args[1]=='danger'or args[1]=='fail'then return false end
+  if type(args[2])=='string'and type(args[3])=='string'then
+   local title=options.fold(args[2])
+   if contains(title,'получен предмет')or contains(title,'получена награда')or contains(title,'вы получили')then
+    return self:ingest(args[2]..': '..args[3],'cef')==true
+   end
+  end
+  if type(args[3])=='string'and self:ingest(args[3],'cef')then return true end
+  return false
+ end
+ return J
+end
+-- End payday journal factory.
+
+-- Windows-only transport: built-in System32 curl, restricted handles, secret config via stdin.
+local function makeTelegramWindowsBackend()
+ local B={initialized=false,ready=false}
+ local api
+ local declarations=[[
+ typedef struct { unsigned int nLength; void* lpSecurityDescriptor; int bInheritHandle; } SHVA_TG214_SECURITY;
+ typedef struct { unsigned int cb; unsigned short* lpReserved; unsigned short* lpDesktop; unsigned short* lpTitle;
+ unsigned int dwX,dwY,dwXSize,dwYSize,dwXCountChars,dwYCountChars,dwFillAttribute,dwFlags;
+ unsigned short wShowWindow,cbReserved2; unsigned char* lpReserved2; void* hStdInput;void* hStdOutput;void* hStdError; } SHVA_TG214_STARTUP;
+ typedef struct { SHVA_TG214_STARTUP StartupInfo;void* lpAttributeList; } SHVA_TG214_STARTUP_EX;
+ typedef struct { void* hProcess;void* hThread;unsigned int dwProcessId,dwThreadId; } SHVA_TG214_PROCESS;
+ typedef struct { unsigned int cbData; unsigned char* pbData; } SHVA_TG214_BLOB;
+ ]]
+ B.declarations=declarations
+ local function initialize()
+  if B.initialized then return B.ready end
+  B.initialized=true
+  if ffi.os~='Windows'then return false end
+  local ok=pcall(function()
+   if not pcall(ffi.typeof,'SHVA_TG214_STARTUP')then ffi.cdef(declarations)end
+   pcall(ffi.cdef,'void* __stdcall GetModuleHandleA(const char*);')
+   pcall(ffi.cdef,'void* __stdcall LoadLibraryA(const char*);')
+   pcall(ffi.cdef,'void* __stdcall GetProcAddress(void*,const char*);')
+   local k=ffi.load('kernel32');local kernel=k.GetModuleHandleA('kernel32.dll');local crypt=k.LoadLibraryA('crypt32.dll')
+   if kernel==nil or crypt==nil then error('native')end
+   local function fn(module,name,signature)local p=k.GetProcAddress(module,name);if p==nil then error('native')end;return ffi.cast(signature,p)end
+   api={kernel=k}
+   local signatures={
+    CreatePipe='int (__stdcall *)(void**,void**,SHVA_TG214_SECURITY*,unsigned int)',
+    SetHandleInformation='int (__stdcall *)(void*,unsigned int,unsigned int)',
+    CloseHandle='int (__stdcall *)(void*)',
+    GetSystemDirectoryW='unsigned int (__stdcall *)(unsigned short*,unsigned int)',
+    GetWindowsDirectoryW='unsigned int (__stdcall *)(unsigned short*,unsigned int)',
+    GetFileAttributesW='unsigned int (__stdcall *)(const unsigned short*)',
+    InitializeProcThreadAttributeList='int (__stdcall *)(void*,unsigned int,unsigned int,size_t*)',
+    UpdateProcThreadAttribute='int (__stdcall *)(void*,unsigned int,size_t,void*,size_t,void*,size_t*)',
+    DeleteProcThreadAttributeList='void (__stdcall *)(void*)',
+    CreateProcessW='int (__stdcall *)(const unsigned short*,unsigned short*,void*,void*,int,unsigned int,void*,const unsigned short*,void*,SHVA_TG214_PROCESS*)',
+    WriteFile='int (__stdcall *)(void*,const void*,unsigned int,unsigned int*,void*)',
+    ReadFile='int (__stdcall *)(void*,void*,unsigned int,unsigned int*,void*)',
+    PeekNamedPipe='int (__stdcall *)(void*,void*,unsigned int,unsigned int*,unsigned int*,unsigned int*)',
+    WaitForSingleObject='unsigned int (__stdcall *)(void*,unsigned int)',
+    GetExitCodeProcess='int (__stdcall *)(void*,unsigned int*)',
+    TerminateProcess='int (__stdcall *)(void*,unsigned int)',
+    GetTickCount='unsigned int (__stdcall *)(void)',LocalFree='void* (__stdcall *)(void*)'}
+   for name,sig in pairs(signatures)do api[name]=fn(kernel,name,sig)end
+   api.protect=fn(crypt,'CryptProtectData','int (__stdcall *)(SHVA_TG214_BLOB*,const unsigned short*,SHVA_TG214_BLOB*,void*,void*,unsigned int,SHVA_TG214_BLOB*)')
+   api.unprotect=fn(crypt,'CryptUnprotectData','int (__stdcall *)(SHVA_TG214_BLOB*,void*,SHVA_TG214_BLOB*,void*,void*,unsigned int,SHVA_TG214_BLOB*)')
+   local function executable(directoryFn,suffix)
+    local directory=ffi.new('unsigned short[32768]');local n=tonumber(directoryFn(directory,32768))
+    if n==0 or n>32700 then return end
+    local app=ffi.new('unsigned short[?]',n+#suffix+1);ffi.copy(app,directory,n*2)
+    for i=1,#suffix do app[n+i-1]=suffix:byte(i)end
+    local attrs=tonumber(api.GetFileAttributesW(app))
+    if attrs==4294967295 or require('bit').band(attrs,16)~=0 then return end
+    return app,n+#suffix
+   end
+   local app,count
+   if ffi.abi('32bit')then app,count=executable(api.GetWindowsDirectoryW,'\\Sysnative\\curl.exe')end
+   if not app then app,count=executable(api.GetSystemDirectoryW,'\\curl.exe')end
+   if not app then error('curl missing')end
+   local args=' --disable --config -';local command=ffi.new('unsigned short[?]',count+2+#args+1)
+   command[0]=34;ffi.copy(command+1,app,count*2);command[count+1]=34
+   for i=1,#args do command[count+1+i]=args:byte(i)end
+   B.app=app;B.command=command;B.commandSize=ffi.sizeof(command)
+  end)
+  B.ready=ok
+  return ok
+ end
+ local function close(h)if h~=nil then api.CloseHandle(h)end end
+ function B.crypt(data,decrypt)
+  if type(data)~='string'or #data<1 or #data>16384 or not initialize()then return nil end
+  local input=ffi.new('unsigned char[?]',#data);ffi.copy(input,data,#data)
+  local source=ffi.new('SHVA_TG214_BLOB[1]');source[0].cbData=#data;source[0].pbData=input
+  local output=ffi.new('SHVA_TG214_BLOB[1]')
+  local ok=decrypt and api.unprotect(source,nil,nil,nil,nil,1,output)or(not decrypt and api.protect(source,nil,nil,nil,nil,1,output))
+  ffi.fill(input,#data,0)
+  if ok==0 or ok==false then return nil end
+  local value
+  if output[0].pbData~=nil then
+   if output[0].cbData>0 and output[0].cbData<=16384 then value=ffi.string(output[0].pbData,output[0].cbData)end
+   ffi.fill(output[0].pbData,output[0].cbData,0);api.LocalFree(output[0].pbData)
+  end
+  return value
+ end
+ local function numericChat(chat)return type(chat)=='string'and chat:match('^%-?%d+$')and #chat<=17 end
+ function B.rpcConfig(token,method,payload)
+  if type(token)~='string'or not token:match('^%d+:[A-Za-z0-9_%-]+$')or #token>160 or type(payload)~='table'then return nil end
+  local bodyData
+  if method=='sendMessage'then
+   if not numericChat(payload.chat_id)or type(payload.text)~='string'or #payload.text>700 then return nil end
+   bodyData={chat_id=payload.chat_id,text=payload.text,link_preview_options={is_disabled=true}}
+   if payload.reply_markup then
+    local rows=payload.reply_markup.inline_keyboard
+    if type(rows)~='table'or #rows~=1 or type(rows[1])~='table'or #rows[1]~=2 then return nil end
+    local safe={}
+    for i,button in ipairs(rows[1])do
+     if type(button)~='table'or type(button.text)~='string'or #button.text>80 or type(button.callback_data)~='string'or #button.callback_data>64 or not button.callback_data:match('^[a-f0-9]+:[a-z]+$')then return nil end
+     safe[i]={text=button.text,callback_data=button.callback_data}
+    end
+    bodyData.reply_markup={inline_keyboard={safe}}
+   end
+  elseif method=='getUpdates'then
+   if type(payload.offset)~='number'or payload.offset<0 or payload.offset~=math.floor(payload.offset)or payload.offset>4503599627370495 or payload.limit~=5 or(payload.timeout~=0 and payload.timeout~=5)then return nil end
+   bodyData={offset=payload.offset,limit=5,timeout=payload.timeout,allowed_updates={'message','callback_query'}}
+  elseif method=='getWebhookInfo'then bodyData={}
+  elseif method=='answerCallbackQuery'then
+   if type(payload.callback_query_id)~='string'or #payload.callback_query_id>200 or not payload.callback_query_id:match('^[A-Za-z0-9_%-]+$')or type(payload.text)~='string'or #payload.text>160 then return nil end
+   bodyData={callback_query_id=payload.callback_query_id,text=payload.text}
+  else return nil end
+  local ok,body=pcall(encodeJson,bodyData);if method=='getWebhookInfo'then ok=true;body='{}'end;if not ok or type(body)~='string'then return nil end
+  local function quote(v)return '"'..v:gsub('\\','\\\\'):gsub('"','\\"'):gsub('\r','\\r'):gsub('\n','\\n'):gsub('\t','\\t')..'"'end
+  local config='url = '..quote('https://api.telegram.org/bot'..token..'/'..method)..'\nrequest = "POST"\nheader = "Content-Type: application/json"\ndata-binary = '..quote(body)..'\nproto = "=https"\nmax-time = 12\nconnect-timeout = 5\nmax-redirs = 0\nsilent\nshow-error\n'
+  if #config>3500 then return nil end;return config
+ end
+ function B.config(token,chat,text)return B.rpcConfig(token,'sendMessage',{chat_id=chat,text=text})end
+ function B.cancel(job)
+  if not job or job.closed or not api then return end
+  if job.process~=nil then api.TerminateProcess(job.process,1);close(job.process)end
+  close(job.output);job.process=nil;job.output=nil;job.closed=true
+ end
+ local function launch(config)
+  if not config or not initialize()then return nil end
+  local pipes={};local process;local attributes;local attrReady=false
+  local function cleanup()
+   for _,h in pairs(pipes)do close(h)end;pipes={}
+   if attrReady then api.DeleteProcThreadAttributeList(attributes);attrReady=false end
+  end
+  local ok,result=pcall(function()
+   local security=ffi.new('SHVA_TG214_SECURITY[1]');security[0].nLength=ffi.sizeof(security[0]);security[0].bInheritHandle=1
+   local r,w=ffi.new('void*[1]'),ffi.new('void*[1]')
+   if api.CreatePipe(r,w,security,65536)==0 then error('pipe')end;pipes.outRead=r[0];pipes.outWrite=w[0]
+   if api.SetHandleInformation(pipes.outRead,1,0)==0 then error('pipe')end
+   if api.CreatePipe(r,w,security,65536)==0 then error('pipe')end;pipes.inRead=r[0];pipes.inWrite=w[0]
+   if api.SetHandleInformation(pipes.inWrite,1,0)==0 then error('pipe')end
+   local size=ffi.new('size_t[1]');api.InitializeProcThreadAttributeList(nil,1,0,size)
+   if size[0]<1 or size[0]>65536 then error('attribute')end
+   attributes=ffi.new('unsigned char[?]',size[0])
+   if api.InitializeProcThreadAttributeList(attributes,1,0,size)==0 then error('attribute')end;attrReady=true
+   local inherited=ffi.new('void*[2]',pipes.inRead,pipes.outWrite)
+   if api.UpdateProcThreadAttribute(attributes,0,0x00020002,inherited,ffi.sizeof(inherited),nil,nil)==0 then error('attribute')end
+   local startup=ffi.new('SHVA_TG214_STARTUP_EX[1]');startup[0].StartupInfo.cb=ffi.sizeof(startup[0]);startup[0].StartupInfo.dwFlags=0x101
+   startup[0].StartupInfo.wShowWindow=0;startup[0].StartupInfo.hStdInput=pipes.inRead;startup[0].StartupInfo.hStdOutput=pipes.outWrite;startup[0].StartupInfo.hStdError=pipes.outWrite;startup[0].lpAttributeList=attributes
+   local info=ffi.new('SHVA_TG214_PROCESS[1]');local command=ffi.new('unsigned short[?]',B.commandSize/2);ffi.copy(command,B.command,B.commandSize)
+   if api.CreateProcessW(B.app,command,nil,nil,1,0x08080000,nil,nil,startup,info)==0 then error('process')end
+   process=info[0].hProcess;close(info[0].hThread)
+   close(pipes.inRead);pipes.inRead=nil;close(pipes.outWrite);pipes.outWrite=nil
+   local written=ffi.new('unsigned int[1]')
+   if api.WriteFile(pipes.inWrite,config,#config,written,nil)==0 or written[0]~=#config then error('pipe')end
+   close(pipes.inWrite);pipes.inWrite=nil
+   local job={process=process,output=pipes.outRead,started=tonumber(api.GetTickCount()),data='',closed=false}
+   process=nil;pipes.outRead=nil;cleanup();return job
+  end)
+  if not ok then if process~=nil then api.TerminateProcess(process,1);close(process)end;cleanup();return nil end
+  return result
+ end
+ function B.start(token,chat,text)return launch(B.config(token,chat,text))end
+ function B.request(token,method,payload)return launch(B.rpcConfig(token,method,payload))end
+ function B.poll(job)
+  if not job or job.closed then return true,nil end
+  local bytes=ffi.new('unsigned int[1]');local got=ffi.new('unsigned int[1]');local buffer=ffi.new('char[16384]')
+  local function drain()
+  for _=1,4 do
+   if api.PeekNamedPipe(job.output,nil,0,nil,bytes,nil)==0 or bytes[0]==0 then break end
+   local n=math.min(tonumber(bytes[0]),16384)
+   if api.ReadFile(job.output,buffer,n,got,nil)==0 then break end
+   job.data=job.data..ffi.string(buffer,got[0])
+   if #job.data>65536 then return false end
+  end
+   return true
+  end
+  if not drain()then B.cancel(job);return true,nil end
+  local elapsed=tonumber(api.GetTickCount())-job.started;if elapsed<0 then elapsed=elapsed+4294967296 end
+  local wait=tonumber(api.WaitForSingleObject(job.process,0))
+  if wait==258 and elapsed<15000 then return false end
+  if wait~=0 then B.cancel(job);return true,nil end
+  if not drain()then B.cancel(job);return true,nil end
+  local code=ffi.new('unsigned int[1]');local gotCode=api.GetExitCodeProcess(job.process,code)
+  local data=gotCode~=0 and tonumber(code[0])==0 and job.data or nil
+  close(job.process);close(job.output);job.process=nil;job.output=nil;job.closed=true;job.data=''
+  return true,data
+ end
+ return B
+end
+-- End Windows Telegram transport.
+
+-- Optional Telegram controller. No connection or notification before explicit consent.
+local function makeTelegramController(o)
+ local T={owner=nil,profile=nil,active=nil,queue={},nextAt=0,status='Не подключён. Отправка выключена.',setup=false,lastLoad=nil}
+ local allowed={salary=true,salary_org=true,deposit=true,bonus=true,item=true}
+ local function clip(s,n)
+  if #s<=n then return s end
+  while n>0 do local b=s:byte(n+1);if not b or b<128 or b>191 then break end;n=n-1 end
+  return s:sub(1,n)..'…'
+ end
+ local function credentials(token,chat)
+  if type(token)~='string'or type(chat)~='string'then return end
+  token=token:match('^%s*(.-)%s*$');chat=chat:match('^%s*(.-)%s*$')
+  local bot,key=token:match('^(%d+):([A-Za-z0-9_%-]+)$')
+  if not bot or #bot<5 or #bot>16 or #key<20 or #key>128 or not chat:match('^%-?%d+$')or #chat>17 or tonumber(chat)==0 then return end
+  if chat:match('^0')or chat:match('^%-0')or math.abs(tonumber(chat))>4503599627370495 then return end
+  return token,chat
+ end
+ T.credentials=credentials
+ local function cancel()
+  if T.active then pcall(o.backend.cancel,T.active.job);T.active=nil end
+ end
+ local function loadOwner()
+  local id=o.owner()
+  if id==T.owner then return end
+  cancel();T.owner=id;T.profile=nil;T.queue={};T.setup=false;T.nextAt=0
+  T.status='Не подключён. Отправка выключена.'
+  if not id then return end
+  local ok,data=pcall(o.load,id)
+  if not ok then T.status='Не удалось прочитать подключение. Подключи Telegram заново.';return end
+  if type(data)=='table'and data.schema==1 and data.owner==id and data.confirmed==true then
+   local token,chat=credentials(data.token,data.chatId)
+   if token then T.profile={schema=1,owner=id,token=token,chatId=chat,confirmed=true,enabled=data.enabled==true,remoteEnabled=data.remoteEnabled==true};T.status=data.enabled and'Подключён. Отправляются только новые начисления.'or'Подключён. Отправка выключена.'end
+  end
+ end
+ function T:connect(token,chat,consent)
+  loadOwner()
+  if consent~=true then self.status='Сначала подтверди согласие на отправку уведомлений.';return false end
+  if not self.owner then self.status='Сначала войди на сервер персонажем.';return false end
+  token,chat=credentials(token,chat)
+  if not token then self.status='Проверь токен бота и числовой Chat ID.';return false end
+  cancel();self.queue={}
+  -- Changing recipient disables an old connection before another one can be confirmed.
+  if self.profile and self.profile.enabled then
+   self.profile.enabled=false
+   local saved,value=pcall(o.save,self.owner,self.profile)
+   if not saved or not value then self.status='На этот запуск отправка выключена, но изменить сохранённое подключение не удалось.';return false end
+  end
+  local ok,job=pcall(o.backend.start,token,chat,'SHEVA_Helper: тест подключения. Новые начисления будут отправляться после подтверждения этого подключения.')
+  if not ok or not job then self.status='Не удалось начать отправку. Проверь поддержку curl в Windows и соединение.';return false end
+  self.active={job=job,owner=self.owner,mode='confirm',token=token,chatId=chat,started=o.now()}
+  self.status='Отправляю тест. Подключение ещё не включено.'
+  return true
+ end
+ function T:setEnabled(enabled)
+  loadOwner()
+  if not self.profile or not self.profile.confirmed then return false end
+  cancel();self.queue={}
+  self.profile.enabled=enabled==true
+  local ok,saved=pcall(o.save,self.owner,self.profile)
+  if not ok or not saved then self.profile.enabled=false;self.status='Отправка выключена на этот запуск; сохранить переключатель не удалось.';return false end
+  self.status=self.profile.enabled and'Отправка включена. Старые записи не отправляются.'or'Отправка выключена.'
+  return true
+ end
+ function T:setRemoteEnabled(enabled,consent)
+  loadOwner()
+  if not self.profile then return false end
+  if enabled and(consent~=true or not self.profile.enabled or tonumber(self.profile.chatId)<=0)then self.status='Для пульта нужны личный Chat ID, включённое подключение и отдельное согласие.';return false end
+  self.profile.remoteEnabled=enabled==true
+  local ok,saved=pcall(o.save,self.owner,self.profile)
+  if not ok or not saved then self.profile.remoteEnabled=false;self.status='Пульт выключен: сохранить настройку не удалось.';return false end
+  self.status=enabled and'Пульт включён. Проверяется личный чат.'or'Пульт выключен.';return true
+ end
+ function T:cancelSetup()
+  if self.active and self.active.mode=='confirm'then cancel();self.status='Подключение отменено. Отправка не включена.'end
+  self.setup=false
+ end
+ function T:disconnect()
+  loadOwner();cancel();self.queue={}
+  if not self.owner then self.profile=nil;return true end
+  if self.profile then self.profile.enabled=false;pcall(o.save,self.owner,self.profile)end
+  local ok,removed=pcall(o.remove,self.owner)
+  self.profile=nil;self.setup=false
+  if not ok or not removed then self.status='На этот запуск отключено; файл подключения удалить не удалось. Проверь подключение после перезапуска.';return false end
+  self.status='Отключено. Данные подключения удалены.';return true
+ end
+ function T:onEvent(e,owner)
+  loadOwner()
+  if not self.profile or self.profile.enabled~=true or self.profile.confirmed~=true or owner~=self.owner or self.active and self.active.mode=='confirm'or not allowed[e.kind]then return false end
+  local text='SHEVA_Helper · Пейдей\n'..owner:gsub('|',' · ')..'\n'..os.date('%d.%m.%Y %H:%M',e.ts)..'\n'..(o.names[e.kind]or'Начисление')..'\n'..e.raw
+  text=text:gsub('[%z\1-\8\11\12\14-\31\127]',' ')
+  self.queue[#self.queue+1]={owner=owner,text=clip(text,600),created=o.now(),attempts=0}
+  if #self.queue>20 then table.remove(self.queue,1);self.status='Очередь переполнена: самые старые уведомления пропущены. Записи остались в журнале.'end
+  return true
+ end
+ local function response(data,chat)
+  if type(data)~='string'or #data>65536 then return false,'network'end
+  local ok,r=pcall(o.decode,data)
+  if not ok or type(r)~='table'then return false,'network'end
+  if r.ok==true and type(r.result)=='table'and type(r.result.chat)=='table'and tonumber(r.result.chat.id)==tonumber(chat)then return true end
+  local code=tonumber(r.error_code)
+  if code==429 then local retry=type(r.parameters)=='table'and tonumber(r.parameters.retry_after)or 30;return false,'rate',math.max(1,math.min(300,retry or 30))end
+  return false,code==401 and'token'or code==403 and'blocked'or'network'
+ end
+ function T:poll()
+  loadOwner()
+  local now=o.now()
+  if self.active then
+   local request=self.active
+   local called,done,data=pcall(o.backend.poll,request.job)
+   if not called or now-request.started>16 then cancel();self.status='Отправка не подтверждена. Автоповтор не выполняется, чтобы не дублировать сообщение.';return end
+   if not done then return end
+   self.active=nil
+   if request.owner~=self.owner then return end
+   local ok,reason,retry=response(data,request.chatId)
+   if request.mode=='confirm'then
+    if ok then
+     local profile={schema=1,owner=self.owner,token=request.token,chatId=request.chatId,confirmed=true,enabled=true,remoteEnabled=false}
+     local saved,value=pcall(o.save,self.owner,profile)
+     if saved and value then self.profile=profile;self.setup=false;self.status='Подключено. Telegram подтвердил отправку теста; включены новые начисления.'
+     else self.profile=nil;self.status='Тест отправлен, но защищённое сохранение не удалось. Отправка не включена.'end
+    else
+     self.status=reason=='token'and'Неверный токен. Отправка не включена.'or(reason=='blocked'and'Открой своего бота и нажми Start. Проверь Chat ID. Отправка не включена.'or'Тест не подтверждён. Проверь бота, Chat ID и соединение; отправка не включена.')
+    end
+   elseif ok then self.status='Последнее уведомление отправлено.';self.nextAt=now+1
+   elseif reason=='rate'and request.entry.attempts<2 then
+    request.entry.attempts=request.entry.attempts+1;table.insert(self.queue,1,request.entry);self.nextAt=now+retry;self.status='Лимит Telegram. Отправка продолжится после паузы.'
+   else self.nextAt=now+3;self.status='Доставка не подтверждена. Запись осталась в локальном журнале.'end
+   return
+  end
+  if not self.profile or self.profile.enabled~=true or now<self.nextAt then return end
+  while self.queue[1]and(now-self.queue[1].created>120 or self.queue[1].owner~=self.owner)do table.remove(self.queue,1)end
+  local e=table.remove(self.queue,1);if not e then return end
+  local ok,job=pcall(o.backend.start,self.profile.token,self.profile.chatId,e.text)
+  if not ok or not job then self.status='Не удалось начать отправку. Запись осталась в журнале.';self.nextAt=now+5;return end
+  self.active={job=job,owner=self.owner,mode='notify',chatId=self.profile.chatId,entry=e,started=now}
+ end
+ function T:shutdown()cancel();self.queue={}end
+ return T
+end
+-- End optional Telegram controller.
+
+-- Remote intents bind to one character, one current dialog and a short-lived confirmation.
+local function makeRemoteIntents(o)
+ local R={pending={},sequence=0,dialog=nil,call=nil,status='Пульт выключен.'}
+ local function clean(s)return o.normalize(type(s)=='string'and s or''):gsub('{%x%x%x%x%x%x}',''):gsub('%s+',' '):match('^%s*(.-)%s*$')end
+ local function entry(kind,data)
+  R.sequence=R.sequence+1
+  local nonce=o.hash(o.session..':'..R.sequence..':'..o.now()):sub(1,20)
+  local e={nonce=nonce,kind=kind,data=data,owner=o.owner(),expires=o.now()+30,stage='initial'};R.pending[nonce]=e;return e
+ end
+ local function buttons(e,first,action,second,other)
+  return {inline_keyboard={{{text=first,callback_data=e.nonce..':'..action},{text=second,callback_data=e.nonce..':'..other}}}}
+ end
+ function R:invalidate()
+  self.pending={};self.dialog=nil;self.call=nil
+ end
+ function R:dialogChanged(id,style,title,b1,b2,text)
+  self.dialog=nil
+  for nonce,e in pairs(self.pending)do if e.kind=='dialog'then self.pending[nonce]=nil end end
+  if not o.enabled()or not o.ready()or style~=0 then return end
+  title,text,b1,b2=clean(title),clean(text),clean(b1),clean(b2)
+  local positive={['принять']=true,['да']=true,['согласен']=true,['купить']=true}
+  local negative={['отклонить']=true,['отказаться']=true,['нет']=true,['отмена']=true}
+  if not positive[o.fold(b1)]or not negative[o.fold(b2)]or title==''or text==''then return end
+  local full='Предложение в игре\n'..title..'\n'..text..'\nКнопки: '..b1..' / '..b2
+  -- No active button when a full review does not fit; never truncate financial terms.
+  if #full>600 then o.send('Большое предложение: '..title..'\nПолный текст проверь в игре. Удалённое подтверждение недоступно.');return end
+  local snapshot={id=id,title=title,text=text,style=style,button1=b1,button2=b2}
+  self.dialog=snapshot;local e=entry('dialog',snapshot)
+  o.send(full,buttons(e,b1,'accept',b2,'decline'))
+ end
+ local function player(s)
+  return s:find('[vip',1,true)or s:find('[premium]',1,true)or s:find('[forever]',1,true)or s:find('[семья]',1,true)or s:find('говорит:',1,true)or s:match('[%w_]+%[%d+%]%s*:')
+ end
+ function R:message(raw)
+  if not o.enabled()or not o.ready()then return end
+  local text=clean(raw);local low=o.fold(text);if player(low)then return end
+  if low:match('^sms:')or low:match('^%[sms%]')or low:match('^смс:')or low:match('^%[смс%]')then
+   local phone=low:match('телефон%s*:%s*(%d+)')or low:match('номер%s*:%s*(%d+)')
+   if #text<=600 then o.send('Входящее СМС\n'..text..(phone and('\nОтветь на это сообщение или /sms '..phone..' текст')or'\nОтвет: /sms НОМЕР текст'),nil,phone and{phone=phone}or nil)end
+   return
+  end
+  local incoming=low:match('^вам звонит')or low:match('^%[телефон%].-вам звонит')or low:match('^входящий вызов')
+  if incoming then
+   for nonce,e in pairs(self.pending)do if e.kind=='call'then self.pending[nonce]=nil end end
+   self.call=nil
+   if #text>550 then return end
+   if low:find('/p',1,true)and low:find('/h',1,true)then
+    local e=entry('call',{raw=text});self.call=e.nonce;o.send('Входящий звонок\n'..text..'\nАудиомост не подключён.',buttons(e,'Ответить','answer','Отклонить','hangup'))
+   else o.send('Входящий звонок\n'..text..'\nКоманды звонка в сообщении не распознаны. Кнопки управления не добавлены.')end
+  elseif low:find('разговор окончен',1,true)or low:find('вызов завершён',1,true)or low:find('собеседник повесил трубку',1,true)then
+   self.call=nil;for nonce,e in pairs(self.pending)do if e.kind=='call'then self.pending[nonce]=nil end end
+  end
+ end
+ function R:sms(phone,text)
+  if not o.enabled()or not o.ready()then return false,'Игра или пульт не готовы.'end
+  if type(phone)~='string'or not phone:match('^%d+$')or #phone<3 or #phone>15 or type(text)~='string'or #text<1 or #text>160 or text:find('[%z\1-\31\127]')then return false,'Формат: /sms НОМЕР текст, одной строкой.'end
+  local encoded=o.smsCommand(phone,text)
+  if type(encoded)~='string'or #encoded>140 then return false,'Текст не поддерживается игрой или слишком длинный.'end
+  local e=entry('sms',{phone=phone,text=text,command=encoded});e.stage='confirm'
+  o.send('Отправить игровое СМС?\nНомер: '..phone..'\nТекст: '..text..'\nВ игре будет использована команда /sms.',buttons(e,'Отправить','send','Отмена','cancel'))
+  return true
+ end
+ local function valid(e)
+  if not e or e.owner~=o.owner()or o.now()>e.expires or not o.enabled()or not o.ready()then return false end
+  if e.kind=='dialog'then
+   local current=o.dialog()
+   return current and R.dialog==e.data and current.id==e.data.id and clean(current.title)==e.data.title and clean(current.text)==e.data.text
+  elseif e.kind=='call'then return R.call==e.nonce end
+  return true
+ end
+ function R:callback(data)
+  if type(data)~='string'then return 'Неизвестная кнопка.'end
+  local nonce,action=data:match('^([a-f0-9]+):([a-z]+)$');local e=nonce and self.pending[nonce]
+  if not valid(e)then if nonce then self.pending[nonce]=nil end;return 'Действие устарело или окно уже изменилось.'end
+  if action=='cancel'then self.pending[nonce]=nil;return 'Отменено.'end
+  if e.kind=='dialog'and action=='accept'and e.stage=='initial'then
+   e.stage='confirm'
+   o.send('Подтвердить действие?\n'..e.data.title..'\n'..e.data.text,buttons(e,'Подтвердить','commit','Отмена','cancel'))
+   return 'Проверь условия и нажми подтверждение.'
+  end
+  local op
+  if e.kind=='dialog'and(action=='decline'or action=='commit'and e.stage=='confirm')then op=action=='decline'and 0 or 1
+  elseif e.kind=='sms'and action=='send'and e.stage=='confirm'then op='sms'
+  elseif e.kind=='call'and(action=='answer'or action=='hangup')then op=action=='answer'and'/p'or'/h'
+  else return 'Сначала требуется подтверждение.'end
+  self.pending[nonce]=nil
+  o.dispatch(function()
+   if not valid(e)then o.send('Действие отменено: состояние игры изменилось.');return end
+   if e.kind=='dialog'then self.dialog=nil;o.answerDialog(e.data.id,op)
+   elseif e.kind=='sms'then o.sendGame(e.data.command)
+   else self.call=nil;o.sendGame(op)end
+   o.send('Запрос передан игре. Выполнение подтверждает сервер.')
+  end)
+  return 'Передаю запрос игре.'
+ end
+ function R:poll()
+  for nonce,e in pairs(self.pending)do if o.now()>e.expires or e.owner~=o.owner()then self.pending[nonce]=nil end end
+ end
+ return R
+end
+-- End remote intents.
+
+-- Private-chat receiver. Webhooks are inspected, never removed; initial backlog is discarded.
+local function makeRemoteReceiver(o)
+ local P={ready=false,key=nil,owner=nil,active=nil,queue={},offset=0,nextAt=0,phase='webhook',blocked=false,replies={},status='Пульт выключен.'}
+ function P:reset()
+  if self.active then pcall(o.backend.cancel,self.active.job)end
+  self.active=nil;self.queue={};self.replies={};self.ready=false;self.offset=0;self.key=nil;self.owner=nil;self.phase='webhook';self.blocked=false;self.nextAt=0
+  o.invalidate()
+ end
+ function P:send(text,markup,meta)
+  if not self.ready or type(text)~='string'or #text>700 then return false end
+  if #self.queue>=20 then self.status='Очередь пульта переполнена. Действия проверь в игре.';return false end
+  self.queue[#self.queue+1]={method='sendMessage',payload={chat_id=self.chatId,text=text,reply_markup=markup,link_preview_options={is_disabled=true}},meta=meta,ts=o.now()}
+  return true
+ end
+ local function authorized(user,chat)
+  return type(user)=='table'and user.is_bot==false and tonumber(user.id)==tonumber(P.chatId)and type(chat)=='table'and chat.type=='private'and tonumber(chat.id)==tonumber(P.chatId)
+ end
+ local function ack(query,text)
+  if #text>140 then local n=140;while n>0 and text:byte(n+1)>=128 and text:byte(n+1)<=191 do n=n-1 end;text=text:sub(1,n)end
+  if #P.queue>=20 then return end
+  if type(query.id)=='string'and #query.id<=200 and query.id:match('^[A-Za-z0-9_%-]+$')then
+   table.insert(P.queue,1,{method='answerCallbackQuery',payload={callback_query_id=query.id,text=text},ts=o.now()})
+  end
+ end
+ function P:update(u)
+  if type(u)~='table'then return end
+  local q=u.callback_query
+  if type(q)=='table'then
+   local m=q.message
+   if type(m)~='table'or not authorized(q.from,m.chat)or type(m.from)~='table'or m.from.is_bot~=true or tonumber(m.from.id)~=tonumber(self.botId)then return end
+   ack(q,o.callback(q.data));return
+  end
+  local m=u.message
+  if type(m)~='table'or not authorized(m.from,m.chat)or type(m.date)~='number'or m.date<self.startedAt-2 or o.now()-m.date>60 or m.date>o.now()+10 then return end
+  if m.voice or m.audio then self:send('Живой голосовой мост пока не подключён. Доступны текстовые СМС и кнопки предложений.');return end
+  if type(m.text)~='string'or #m.text>512 then return end
+  local phone,text=m.text:match('^/sms%s+(%d+)%s+(.+)$')
+  if phone then local ok,why=o.sms(phone,text);if not ok then self:send(why)end;return end
+  local reply=m.reply_to_message
+  local target=type(reply)=='table'and self.replies[reply.message_id]
+  if target and target.owner==self.owner and target.expires>=o.now()then local ok,why=o.sms(target.phone,m.text);if not ok then self:send(why)end;return end
+  self:send('Пульт SHEVA_Helper\nСМС: /sms НОМЕР текст. Перед отправкой появится подтверждение. На входящее СМС с известным номером можно ответить функцией Reply. Предложения приходят кнопками. Игра должна быть запущена. Голосовой мост не подключён.')
+ end
+ local function fail(text)
+  P.ready=false;P.blocked=true;P.queue={};P.status=text;o.invalidate()
+ end
+ function P:poll()
+  local p=o.profile()
+  if not p or not p.enabled or not p.remoteEnabled or tonumber(p.chatId)<=0 then if self.key then self:reset()end;self.status='Пульт выключен.';return end
+  local key=p.owner..'|'..p.token..'|'..p.chatId
+  if key~=self.key then self:reset();self.key=key;self.owner=p.owner;self.chatId=p.chatId;self.botId=p.token:match('^(%d+):');self.startedAt=o.now();self.status='Проверяю подключение пульта.'end
+  if self.blocked then return end
+  local now=o.now()
+  for id,target in pairs(self.replies)do if target.expires<now or target.owner~=self.owner then self.replies[id]=nil end end
+  if self.active then
+   local request=self.active;local ok,done,body=pcall(o.backend.poll,request.job)
+   if not ok or now-request.started>16 then pcall(o.backend.cancel,request.job);self.active=nil;self.nextAt=now+5;self.status='Нет ответа Telegram; действия не выполняются.';return end
+   if not done then return end;self.active=nil
+   local decoded,r=pcall(o.decode,body or'')
+   if not decoded or type(r)~='table'or r.ok~=true then
+    if type(r)=='table'and r.error_code==409 then fail('Бот уже обслуживается другим обработчиком. Пульт не включён; настройки чужого обработчика не менялись.')
+    else self.nextAt=now+5;self.status='Ошибка связи пульта с Telegram.'end
+    return
+   end
+   if request.method=='getWebhookInfo'then
+    if type(r.result)~='table'or r.result.url~=''then fail('У бота подключён webhook. Для пульта нужен отдельный бот; webhook не удалялся.');return end
+    self.phase='drain';self.status='Пропускаю старые команды.'
+   elseif request.method=='getUpdates'then
+    if type(r.result)~='table'then fail('Неверный ответ Telegram. Пульт остановлен.');return end
+    local count=0
+    for _,u in ipairs(r.result)do
+     if type(u)=='table'and type(u.update_id)=='number'and u.update_id>=self.offset and u.update_id==math.floor(u.update_id)then
+      self.offset=u.update_id+1;count=count+1
+      if self.phase=='poll'then self:update(u)end
+     end
+    end
+    if self.phase=='drain'and count<5 then self.phase='poll';self.ready=true;self.status='Пульт подключён. Принимаются только новые команды из твоего личного чата.'end
+   elseif request.method=='sendMessage'and request.meta and type(r.result)=='table'and type(r.result.chat)=='table'and tonumber(r.result.chat.id)==tonumber(self.chatId)then
+    local id=r.result.message_id;if type(id)=='number'then self.replies[id]={phone=request.meta.phone,owner=self.owner,expires=now+180}end
+   end
+   return
+  end
+  if now<self.nextAt then return end
+  local request=table.remove(self.queue,1)
+  while request and now-request.ts>20 do request=table.remove(self.queue,1)end
+  if not request then
+   if self.phase=='webhook'then request={method='getWebhookInfo',payload={}}
+   else request={method='getUpdates',payload={offset=self.offset,limit=5,timeout=self.phase=='poll'and 5 or 0,allowed_updates={'message','callback_query'}}}end
+  end
+  local ok,job=pcall(o.backend.request,p.token,request.method,request.payload)
+  if not ok or not job then self.nextAt=now+5;self.status='Не удалось начать запрос пульта.';return end
+  request.job=job;request.started=now;self.active=request
+ end
+ return P
+end
+-- End private-chat receiver.
+
+local remoteIntents,remoteReceiver
+local telegram
+local payday=makePaydayJournal({normalize=jsonTextUtf8,fold=priceFold,decode=decodeJson,now=os.time,
+ owner=function()
+  if type(sampGetCurrentServerAddress)~='function'or type(sampGetPlayerIdByCharHandle)~='function'or type(sampGetPlayerNickname)~='function'or PLAYER_PED==nil then return end
+  local found,id=sampGetPlayerIdByCharHandle(PLAYER_PED);if not found then return end
+  local nick=sampGetPlayerNickname(id);local address,port=sampGetCurrentServerAddress()
+  if type(nick)~='string'or nick==''or type(address)~='string'or address==''or type(port)~='number'then return end
+  return address..':'..port..'|'..nick
+ end,
+ emit=function(event,owner)if telegram then telegram:onEvent(event,owner)end end,
+ path=function(id)return root..'/payday_'..sha256(id):sub(1,24)..'.json'end,
+ read=function(path)return readJsonFile(path,4194304)end,write=function(path,data)return writeJsonFile(path,data,4194304)end})
+local paydayNames={payday='Пейдей',salary_org='Зарплата организации',salary='Зарплата',deposit='Доход по депозиту',bonus='Денежный бонус',item='Предмет / кейс',notice='Уведомление: формат не распознан'}
+-- Local encrypted settings are deliberately separate from ordinary JSON settings and updater payloads.
+local telegramWindows=makeTelegramWindowsBackend()
+local function telegramPath(owner)return root..'/telegram_'..sha256(owner):sub(1,24)..'.dat'end
+local function readTelegramProfile(owner)
+ local f=io.open(telegramPath(owner),'rb');if not f then return end
+ local encrypted=f:read(16385);f:close();if #encrypted>16384 then error('protected profile')end
+ local value=telegramWindows.crypt(encrypted,true);if not value then error('protected profile')end
+ local ok,data=pcall(decodeJson,value);if not ok or type(data)~='table'then error('protected profile')end
+ return data
+end
+local function writeTelegramProfile(owner,data)
+ local encoded,plain=pcall(encodeJson,data);if not encoded or type(plain)~='string'or #plain>8192 then return false end
+ local encrypted=telegramWindows.crypt(plain,false);if not encrypted then return false end
+ local path=telegramPath(owner);local f=io.open(path..'.new','wb');if not f then return false end
+ local wrote=f:write(encrypted);local closed=f:close()
+ if not wrote or not closed then os.remove(path..'.new');return false end
+ local old=io.open(path,'rb');local exists=old~=nil;if old then old:close()end
+ os.remove(path..'.previous')
+ if exists and not os.rename(path,path..'.previous')then os.remove(path..'.new');return false end
+ if not os.rename(path..'.new',path)then if exists then os.rename(path..'.previous',path)end;os.remove(path..'.new');return false end
+ os.remove(path..'.previous');return true
+end
+local function removeTelegramProfile(owner)
+ local good=true
+ for _,suffix in ipairs({'','.previous','.new'})do
+  local path=telegramPath(owner)..suffix;local f=io.open(path,'rb')
+  if f then f:close();if not os.remove(path)then good=false end end
+ end
+ return good
+end
+telegram=makeTelegramController({backend=telegramWindows,now=os.time,decode=decodeJson,names=paydayNames,
+ owner=function()return payday.current and payday.current.owner end,load=readTelegramProfile,save=writeTelegramProfile,remove=removeTelegramProfile})
+local function remoteReady()
+ return type(isSampAvailable)=='function'and isSampAvailable()and type(isPlayerPlaying)=='function'and PLAYER_HANDLE~=nil and isPlayerPlaying(PLAYER_HANDLE)and payday.current~=nil
+end
+local function remoteEnabled()
+ return telegram.profile and telegram.profile.enabled and telegram.profile.remoteEnabled and remoteReceiver and remoteReceiver.ready and remoteReceiver.owner==(payday.current and payday.current.owner)
+end
+local function liveRemoteDialog()
+ if type(sampIsDialogActive)~='function'or not sampIsDialogActive()or type(sampGetCurrentDialogId)~='function'or type(sampGetDialogCaption)~='function'or type(sampGetDialogText)~='function'then return end
+ return {id=sampGetCurrentDialogId(),title=sampGetDialogCaption(),text=sampGetDialogText()}
+end
+remoteIntents=makeRemoteIntents({normalize=jsonTextUtf8,fold=priceFold,hash=sha256,session=tostring(os.time())..':'..tostring({}),now=os.time,
+ owner=function()return payday.current and payday.current.owner end,enabled=remoteEnabled,ready=remoteReady,dialog=liveRemoteDialog,
+ smsCommand=function(phone,text)
+  local ok,value=pcall(cp,'/sms '..phone..' '..text);if not ok or type(value)~='string'or #value>140 then return end
+  local round,utf=pcall(function()return encoding.UTF8:encode(value,'CP1251')end)
+  if round and utf=='/sms '..phone..' '..text then return value end
+ end,
+ send=function(text,markup,meta)return remoteReceiver:send(text,markup,meta)end,dispatch=defer,
+ answerDialog=function(id,button)if type(sampSendDialogResponse)~='function'then error('dialog response unavailable')end;sampSendDialogResponse(id,button,0,'')end,
+ sendGame=function(command)
+  if command~='/p'and command~='/h'and not command:match('^/sms %d+ [^%z\1-\31\127]+$')then error('remote command rejected')end
+  if type(sampSendChat)~='function'then error('chat unavailable')end;sampSendChat(command)
+ end})
+remoteReceiver=makeRemoteReceiver({backend=telegramWindows,now=os.time,decode=decodeJson,profile=function()return telegram.profile end,
+ invalidate=function()remoteIntents:invalidate()end,callback=function(data)return remoteIntents:callback(data)end,sms=function(phone,text)return remoteIntents:sms(phone,text)end})
+local telegramUI={}
+local function ensureTelegramForm()
+ if not telegramUI.token then telegramUI.token=imgui.new.char[256]();telegramUI.chat=imgui.new.char[48]();telegramUI.consent=imgui.new.bool(false)end
+ if not telegramUI.remoteConsent then telegramUI.remoteConsent=imgui.new.bool(false)end
+end
+local function clearTelegramForm()
+ if not telegramUI.token then return end
+ ffi.fill(telegramUI.token,ffi.sizeof(telegramUI.token),0);ffi.fill(telegramUI.chat,ffi.sizeof(telegramUI.chat),0);telegramUI.consent[0]=false
+end
+local function drawTelegramSettings()
+ imgui.Separator();imgui.TextColored(accent,'Telegram — по желанию')
+ imgui.TextColored(quiet,'Подключение отдельно для текущего персонажа и сервера.')
+ imgui.TextWrapped(telegram.status)
+ if telegram.profile then
+  imgui.TextColored(quiet,'Chat ID: …'..telegram.profile.chatId:sub(-4))
+  local enabled=imgui.new.bool(telegram.profile.enabled)
+  if imgui.Checkbox('Отправлять новые начисления в Telegram',enabled)then local value=enabled[0];defer(function()telegram:setEnabled(value)end)end
+  ensureTelegramForm()
+  imgui.Separator();imgui.TextColored(accent,'Telegram-пульт · тестовая интеграция')
+  imgui.TextWrapped(remoteReceiver.status)
+  imgui.TextWrapped('Поддерживаются короткие предложения в обычных окнах SA:MP с двумя кнопками, входящие СМС и уведомления о звонках. CEF-обмены и живой голос пока не поддерживаются. Игра должна оставаться запущенной.')
+  if telegram.profile.remoteEnabled then
+   if imgui.Button('Выключить Telegram-пульт')then defer(function()telegram:setRemoteEnabled(false);remoteReceiver:reset()end)end
+  else
+   imgui.Checkbox('Разрешаю управление игрой из моего личного Telegram-чата',telegramUI.remoteConsent)
+   if imgui.Button('Включить Telegram-пульт')then local consent=telegramUI.remoteConsent[0];defer(function()telegram:setRemoteEnabled(true,consent);telegramUI.remoteConsent[0]=false end)end
+  end
+  imgui.TextWrapped('Для пульта используй отдельного бота без webhook и другого обработчика. Принятие предложения требует второго подтверждения; кнопка действует 30 секунд. СМС отправляется после предпросмотра и подтверждения. Голосовые сообщения не передаются в игровой звонок.')
+  if imgui.Button('Отключить и удалить подключение')then defer(function()telegram:disconnect();clearTelegramForm()end)end
+ end
+ if not telegram.setup then
+  if imgui.Button(telegram.profile and'Изменить подключение Telegram'or'Подключить Telegram')then ensureTelegramForm();telegram.setup=true;telegramUI.consent[0]=false end
+ else
+  ensureTelegramForm()
+  imgui.TextWrapped('Создай своего бота у @BotFather, открой его в Telegram и нажми Start. Затем укажи токен бота и числовой Chat ID получателя.')
+  imgui.PushItemWidth(math.min(500,imgui.GetContentRegionAvail().x))
+  imgui.InputTextWithHint('##telegramToken','Токен своего бота',telegramUI.token,ffi.sizeof(telegramUI.token),imgui.InputTextFlags.Password)
+  imgui.InputTextWithHint('##telegramChat','Числовой Chat ID',telegramUI.chat,ffi.sizeof(telegramUI.chat))
+  imgui.PopItemWidth()
+  imgui.Checkbox('Разрешаю отправку уведомлений этому боту',telegramUI.consent)
+  imgui.TextWrapped('Будут передаваться текст нового начисления, ник и сервер. Старые записи журнала не отправляются. Токен сохраняется защищённым для текущего пользователя Windows.')
+  if not telegram.active or telegram.active.mode~='confirm'then
+   if imgui.Button('Подтвердить и отправить тест')then
+    local token,chat,consent=ffi.string(telegramUI.token),ffi.string(telegramUI.chat),telegramUI.consent[0]
+    defer(function()if telegram:connect(token,chat,consent)then clearTelegramForm()end end)
+   end
+  else imgui.TextDisabled('Жду ответа Telegram…')end
+  if imgui.Button(telegram.active and telegram.active.mode=='confirm'and'Отменить подключение'or'Закрыть настройку Telegram')then telegram:cancelSetup();clearTelegramForm()end
+ end
+ imgui.TextColored(quiet,'Без подключения Telegram журнал пейдея работает локально.')
+end
+-- End optional Telegram UI.
+
+local function drawPayday()
+ section('Пейдей и начисления','Автоматический журнал сообщений игры: деньги, зарплата, доход по депозиту и предметы. Группировка по часам; время — часы компьютера.')
+ if not payday.current then
+  imgui.TextWrapped('Ожидаю данные твоего персонажа и сервера. Истории разных аккаунтов хранятся отдельно.')
+ end
+ local notify=imgui.new.bool(cfg.paydayNotifications)
+ if imgui.Checkbox('Показывать карточку при начислении',notify)then cfg.paydayNotifications=notify[0];save()end
+ for _,option in ipairs({{'Сегодня','today'},{'7 дней','week'},{'Вся история','all'}})do
+  if imgui.Button(option[1]..'##payPeriod')then payday.period=option[2];payday.page=1 end;imgui.SameLine()
+ end
+ imgui.NewLine()
+ local totals=payday:totals(payday.period);local width=math.max(250,imgui.GetContentRegionAvail().x);local cell=(width-24)/3
+ metric('ЗАРПЛАТА',priceLabel(totals.salary_org+totals.salary,'sa'),cell);imgui.SameLine()
+ metric('ДЕПОЗИТ',priceLabel(totals.deposit,'sa'),cell);imgui.SameLine()
+ metric('БОНУСЫ',priceLabel(totals.bonus,'sa'),cell)
+ imgui.TextColored(quiet,'Уведомлений о предметах: '..totals.items..'. Сумм, требующих проверки: '..totals.unpriced)
+ if payday.error~=''then imgui.TextWrapped(payday.error..' Записи пока остаются в памяти; запись будет повторена автоматически.')end
+ local rows=payday:rows(payday.period);local pages=math.max(1,math.ceil(#rows/20));payday.page=math.min(payday.page,pages)
+ if #rows==0 then imgui.TextWrapped('Начислений пока нет. Дождись пейдея или сообщения об отправке предмета в хранилище. Старые события задним числом не восстанавливаются.')end
+ if imgui.Button('Назад##payPage')then payday.page=math.max(1,payday.page-1)end;imgui.SameLine()
+ imgui.Text(payday.page..' / '..pages);imgui.SameLine()
+ if imgui.Button('Далее##payPage')then payday.page=math.min(pages,payday.page+1)end
+ local hour
+ for i=(payday.page-1)*20+1,math.min(payday.page*20,#rows)do
+  local e=rows[i];local group=os.date('%d.%m.%Y · %H:00',e.ts)
+  if hour~=group then hour=group;imgui.Spacing();imgui.TextColored(accent,group);imgui.Separator()end
+  imgui.TextColored(accent,paydayNames[e.kind]or'Начисление');imgui.SameLine();imgui.TextDisabled(os.date('%H:%M:%S',e.ts))
+  if e.amount~=nil then imgui.Text(priceLabel(e.amount,'sa'))
+  elseif e.kind=='deposit'or e.kind=='salary'or e.kind=='salary_org'or e.kind=='bonus'then imgui.TextDisabled('Сумма не распознана — в итог не включена.')end
+  if e.kind=='item'then
+   imgui.TextWrapped(e.item or'Название смотри в сообщении ниже.')
+   imgui.TextColored(quiet,(e.destination=='storage'and'Отправлено в хранилище'or'Место получения не указано')..' · '..(e.quantity and(e.quantity..' шт.')or'количество не указано'))
+  end
+  imgui.TextWrapped(e.raw);imgui.Separator()
+ end
+ imgui.TextWrapped('Суммы считаются только из распознанных сообщений. Совпадающий текст за 8 секунд не записывается повторно. Неизвестные суммы остаются в журнале без включения в итог.')
+end
+local function installPaydayHooks()
+ local events=require 'samp.events';local previous=events.onServerMessage
+ events.onServerMessage=function(color,text)
+  local remoteOK=true;if remoteIntents then remoteOK=pcall(remoteIntents.message,remoteIntents,text)end;if not remoteOK then log('Remote chat adapter failed')end
+  local ok,err=pcall(payday.ingest,payday,text,'chat');if not ok then log('Payday chat: '..tostring(err))end
+  if previous then return previous(color,text)end
+ end
+ local previousDialog=events.onShowDialog
+ events.onShowDialog=function(id,style,title,button1,button2,text)
+  local remoteOK=true;if remoteIntents then remoteOK=pcall(remoteIntents.dialogChanged,remoteIntents,id,style,title,button1,button2,text)end;if not remoteOK then log('Remote dialog adapter failed')end
+  local ok,err=pcall(function()
+   if type(title)~='string'or type(text)~='string'then return end
+   local clean=priceFold(jsonTextUtf8(title))
+   if clean:find('payday',1,true)or clean:find('пейдей',1,true)or clean:find('банковский чек',1,true)then
+    payday:ingest(title,'dialog')
+    for line in text:gmatch('[^\r\n]+')do payday:ingest(line,'dialog')end
+   end
+  end)
+  if not ok then log('Payday dialog: '..tostring(err))end
+  if previousDialog then return previousDialog(id,style,title,button1,button2,text)end
+ end
+ local previousResponse=events.onSendDialogResponse
+ events.onSendDialogResponse=function(...)
+  if remoteIntents then remoteIntents.dialog=nil end
+  if previousResponse then return previousResponse(...)end
+ end
+ payday.hooks=true
+ if type(addEventHandler)=='function'then addEventHandler('onScriptTerminate',function(script)
+  if type(thisScript)=='function'and script==thisScript()then if remoteReceiver then remoteReceiver:reset()end;if telegram then telegram:shutdown()end;local ok,err=pcall(payday.flush,payday);if not ok then log('Payday save: '..tostring(err))end end
+ end)end
+ if type(addEventHandler)~='function'or type(raknetBitStreamResetReadPointer)~='function'or type(raknetBitStreamGetReadOffset)~='function'or type(raknetBitStreamSetReadOffset)~='function'then return end
+ addEventHandler('onReceivePacket',function(id,bs)
+  if id~=220 or not bs then return end
+  local offset=raknetBitStreamGetReadOffset(bs)
+  local ok,err=pcall(function()
+   raknetBitStreamResetReadPointer(bs)
+   local bytes=raknetBitStreamGetNumberOfBytesUsed(bs);if bytes<9 or bytes>131072 then return end
+   raknetBitStreamIgnoreBits(bs,8);if raknetBitStreamReadInt8(bs)~=17 then return end
+   raknetBitStreamIgnoreBits(bs,32)
+   local length=raknetBitStreamReadInt16(bs);local encoded=raknetBitStreamReadInt8(bs)
+   if length<=0 or length>32767 or length+8>bytes then return end
+   local code=encoded~=0 and raknetBitStreamDecodeString(bs,length+encoded)or raknetBitStreamReadString(bs,length)
+   if code then payday:cef(code)end
+  end)
+  raknetBitStreamSetReadOffset(bs,offset)
+  if not ok then log('Payday CEF: '..tostring(err))end
+ end)
+end
+-- End payday journal UI.
+
+local function diagnosticText()
+    local lines={'SHEVA_Helper '..releaseVersion,os.date('%Y-%m-%d %H:%M:%S'),'Клавиши: '..keyName()}
+    lines[#lines+1]='Журнал запуска: '..tostring(boot.path)
+    lines[#lines+1]='Инициализация GUI: '..tostring(initialized)..'; ошибка: '..tostring(boot.guiError)
+    lines[#lines+1]='Ошибка main: '..tostring(boot.mainError)
+    lines[#lines+1]='Версия хоста: '..(host and tostring(host.revision or 'не указана')or'не загружен')
+    lines[#lines+1]='Этап отрисовки: '..tostring(boot.guiStage or 'не начат')
+    local width,height=getScreenResolution();lines[#lines+1]='Экран: '..width..'x'..height
+    for _,m in ipairs(modules)do
+        local item=host and host.items[m.id]
+        local status=item and(item.error or(item.started and'запущен'or'не запущен'))or'не загружен'
+        lines[#lines+1]=m.title..': '..status
+    end
+    lines[#lines+1]='Сохранённых цен: '..#localPrices.rows
+    lines[#lines+1]='Сохранённых сетов: '..#plans.sets
+    lines[#lines+1]='Обновления: '..updater.state
+    lines[#lines+1]='Telegram: '..(telegram.profile and(telegram.profile.enabled and'включён'or'выключен')or'не подключён')
+    lines[#lines+1]='Пейдей: '..tostring(payday.hooks)..'; записей: '..(payday.current and #payday.current.events or 0)..'; сохранение: '..payday.error
+    lines[#lines+1]='Очереди: '..(monitor.error~=''and monitor.error or tostring(#monitor.rows)..' серверов')
+    return table.concat(lines,'\n')
+end
+local function exportDiagnostics()
+    local text=diagnosticText()
+    local copied=false
+    if type(setClipboardText)=='function'then local ok,result=pcall(setClipboardText,cp(text));copied=ok and result~=false end
+    local f=io.open(root..'/diagnostic.txt','wb')
+    if not f then feedback=copied and'Отчёт скопирован; файл записать не удалось.'or'Не удалось записать или скопировать отчёт диагностики.';return copied end
+    local wrote=f:write(text);local closed=f:close()
+    if not wrote or not closed then feedback=copied and'Отчёт скопирован; ошибка записи файла.'or'Ошибка записи отчёта диагностики.';return copied end
+    if copied then feedback='Отчёт сохранён и скопирован. Его можно вставить в сообщение.'
+    else feedback='Отчёт сохранён: config/Cripto_Shewa/diagnostic.txt'end
+    return true
+end
+local function drawSettings()
+    if settingsDirty then
+        imgui.TextColored((cfg.themeMode=='dark'and imgui.ImVec4(1,0.56,0.59,1)or imgui.ImVec4(0.70,0.18,0.23,1)),'Настройки изменены, но не сохранены на диск.')
+        if imgui.Button('Повторить сохранение настроек')then save()end
+    end
+    imgui.TextColored(accent,'Обновления SHEVA_Helper · '..releaseVersion)
+    imgui.TextWrapped(updater.state)
+    if imgui.Button('Проверить обновления')then defer(checkUpdates)end
+    if updater.available and not updater.busy then imgui.SameLine();if imgui.Button('Обновить до '..updater.manifest.version)then defer(installUpdate)end end
+    imgui.TextWrapped('Проверка при входе автоматическая. Обновление комплекта — кнопкой, с проверкой каждого файла и резервными копиями. Применяется после перезапуска игры.')
+    imgui.Separator()
+    section('Настройки','Сочетание открытия можно изменить. F-клавиши не принимаются, чтобы не занимать управление игрой.')
+    imgui.TextColored(accent,'SHEVA_Helper / EMERALD')
+    imgui.Spacing()
+    local motion=imgui.new.bool(cfg.animation)
+    if imgui.Checkbox('Плавное переливание кнопок и свечение',motion)then cfg.animation=motion[0];save()end
+    local art=imgui.new.bool(cfg.artwork)
+    if imgui.Checkbox('Атмосферный фон',art)then cfg.artwork=art[0];save()end
+    imgui.TextColored(quiet,'Режим оформления')
+    for _,option in ipairs({{'Тёмная','dark'},{'Светлая','light'}})do
+        if imgui.Button((cfg.themeMode==option[2]and'• 'or'')..option[1]..'##theme'..option[2],imgui.ImVec2(160,36))then local mode=option[2];defer(function()selectTheme(mode)end)end
+        imgui.SameLine()
+    end
+    imgui.NewLine();imgui.TextWrapped('Тема сохраняется и применяется к встроенным панелям без перезапуска игры.')
+    imgui.TextColored(quiet,'Цвет акцентов')
+    for _,option in ipairs({{'Emerald','emerald'},{'Золото','amber'},{'Фиолетовый','violet'},{'Мята','teal'}})do
+        if imgui.Button(option[1])then cfg.palette=option[2];theme();save()end
+        imgui.SameLine()
+    end
+    imgui.NewLine();imgui.Spacing()
+    imgui.Text('Сейчас: '..keyName())
+    if imgui.Button(binding and 'Нажми сочетание... Esc — отмена' or 'Изменить сочетание',imgui.ImVec2(340,36))then binding=true end
+    imgui.Spacing();imgui.TextWrapped('Рекомендуется сочетание с Ctrl, Shift или Alt. Без модификаторов назначение не сохраняется.')
+    imgui.Separator()
+    drawTelegramSettings()
+    if imgui.Button('Скопировать диагностику')then defer(exportDiagnostics)end
+    imgui.TextWrapped('Отчёт содержит версию, состояния модулей и ошибки. Сам никуда не отправляется.')
+    imgui.Separator();imgui.TextWrapped('О программе. Разработчики исходных модулей: ArzHub. Оформление, единое окно и интеграция: SHEVA_Helper. Исходники и версии указаны в SOURCES.txt.')
+    imgui.TextWrapped('Старая база средних цен и настройки модулей не удаляются. Источники: arzhub.top — каталоги и мониторинг; открытый архив FREYM1337/forumnick — история цен. Сайты автоматически не открываются.')
+end
+
+-- Slow phased navigation shimmer. Text contrast stays fixed; no layout or focus changes.
+local function navColors(index,selected,time)
+ local phase=cfg.animation and(0.5+0.5*math.sin((time or clockSeconds())*1.1-index*0.48))or 0.35
+ local dark=cfg.themeMode=='dark'
+ local bg,text,hover,active
+ if selected then
+  bg=dark and imgui.ImVec4(0.40+phase*0.10,0.80+phase*0.10,0.62+phase*0.12,1)or imgui.ImVec4(0.035,0.32+phase*0.07,0.22+phase*0.06,1)
+  text=dark and imgui.ImVec4(0.015,0.055,0.04,1)or imgui.ImVec4(1,1,1,1)
+  hover=bg;active=bg
+ else
+  bg=dark and imgui.ImVec4(0.035+phase*0.025,0.15+phase*0.065,0.12+phase*0.06,1)or imgui.ImVec4(0.80+phase*0.045,0.92+phase*0.025,0.88+phase*0.035,1)
+  text=dark and imgui.ImVec4(0.93,0.98,0.95,1)or imgui.ImVec4(0.04,0.19,0.13,1)
+  hover=dark and imgui.ImVec4(0.07,0.28,0.22,1)or imgui.ImVec4(0.69,0.86,0.79,1)
+  active=dark and imgui.ImVec4(0.09,0.34,0.25,1)or imgui.ImVec4(0.60,0.80,0.71,1)
+ end
+ return bg,text,hover,active
+end
+local function navHeading(label,index)
+ local phase=cfg.animation and(0.5+0.5*math.sin(clockSeconds()*1.1-index*0.48))or 0.35
+ local c=cfg.themeMode=='dark'and imgui.ImVec4(0.63+phase*0.15,0.84+phase*0.12,0.74+phase*0.14,1)or imgui.ImVec4(0.08,0.34+phase*0.08,0.24+phase*0.06,1)
+ imgui.TextColored(c,label)
+end
+local function navButton(label,value)
+ local bg,text,hover,active=navColors(value,tab==value)
+ imgui.PushStyleColor(imgui.Col.Button,bg);imgui.PushStyleColor(imgui.Col.Text,text)
+ imgui.PushStyleColor(imgui.Col.ButtonHovered,hover);imgui.PushStyleColor(imgui.Col.ButtonActive,active)
+ if imgui.Button(label..'##nav'..value,imgui.ImVec2(-1,32))then tab=value end
+ imgui.PopStyleColor(4)
+end
+imgui.OnFrame(function()
+    if not opened[0]then boot.center=true;boot.textInputActive=false end
+    return opened[0]
+end,function(player)
+    player.HideCursor=false;player.LockPlayer=true
+    boot.guiStage='page-'..tostring(tab)
+    theme();themeDirty=false -- Embedded panels share the style; restore shell colors every frame.
+    local sw,sh=getScreenResolution()
+    local width,height=math.min(1180,sw-40),math.min(800,sh-40)
+    if boot.center or boot.screenW~=sw or boot.screenH~=sh then
+        imgui.SetNextWindowPos(imgui.ImVec2(math.max(0,(sw-width)/2),math.max(0,(sh-height)/2)),imgui.Cond.Always)
+        imgui.SetNextWindowSize(imgui.ImVec2(width,height),imgui.Cond.Always)
+        boot.center=false;boot.screenW=sw;boot.screenH=sh
+    else imgui.SetNextWindowSize(imgui.ImVec2(width,height),imgui.Cond.FirstUseEver)end
+    if imgui.Begin(cfg.name..'###CriptoShewaMain',opened,imgui.WindowFlags.NoCollapse+imgui.WindowFlags.NoTitleBar)then
+        local draw=imgui.GetWindowDrawList()
+        local wp=imgui.GetWindowPos();local ws=imgui.GetWindowSize()
+
+        draw:AddRectFilled(imgui.ImVec2(wp.x+15,wp.y+1),imgui.ImVec2(wp.x+ws.x-15,wp.y+3),imgui.GetColorU32Vec4(imgui.ImVec4(accent.x,accent.y,accent.z,0.70*pulseAlpha())),2)
+        imgui.TextColored(accent,'SHEVA_Helper / EMERALD')
+        imgui.SameLine(math.max(300,ws.x-180));if imgui.SmallButton('Настройки##top')then tab=10 end
+        imgui.SameLine();if imgui.SmallButton('X##close')then opened[0]=false end
+        drawHero(true)
+        local navWidth=ws.x<900 and 175 or 205
+        imgui.PushStyleVarVec2(imgui.StyleVar.ItemSpacing,imgui.ImVec2(8,5))
+        imgui.BeginChild('##nav',imgui.ImVec2(navWidth,-32),true)
+        navHeading('ЛИЧНЫЙ ЦЕНТР',0)
+        navButton('Обзор',0);navButton('Пейдей',13)
+        imgui.Spacing();navHeading('ИНСТРУМЕНТЫ',4)
+        for i,m in ipairs(modules)do navButton(m.title,i)end
+        imgui.Spacing();navHeading('РЫНОК И СЕРВЕРА',9)
+        navButton('Архив сделок',12);navButton('Средние цены',8);navButton('Мои сеты',9);navButton('Очереди серверов',11)
+        imgui.Spacing();navButton('Настройки',10)
+        imgui.EndChild();imgui.PopStyleVar();imgui.SameLine()
+        imgui.BeginChild('##content',imgui.ImVec2(0,-32),false)
+        if tab==0 then drawHome()elseif tab<=7 then drawModule(modules[tab])elseif tab==8 then drawMarket()elseif tab==9 then drawSets()elseif tab==11 then drawServers()elseif tab==12 then drawArzTable()elseif tab==13 then drawPayday()else drawSettings()end
+        imgui.EndChild();imgui.Separator()
+        imgui.TextColored(quiet,feedback~=''and feedback or(keyName()..'   /   Главное окно   /   '..releaseVersion))
+        boot.textInputActive=imgui.GetIO().WantTextInput==true or imgui.IsAnyItemActive()==true
+        if not boot.menuDrawn then boot.menuDrawn=true;boot:record('menu-drawn','Root window completed its first draw')end
+    end
+    imgui.End()
+end)
+local function paydayToast()
+ if not cfg.paydayNotifications or not payday.current then payday.toasts={};return end
+ local now=os.time()
+ while payday.toasts[1]do
+  local t=payday.toasts[1]
+  if t.owner~=payday.current.owner or now-t.ts>20 or(t.shown and now-t.shown>=6)then table.remove(payday.toasts,1)
+  else t.shown=t.shown or now;return t end
+ end
+end
+imgui.OnFrame(function()return not opened[0]and paydayToast()~=nil end,function(player)
+ local t=paydayToast();if not t then return end
+ player.HideCursor=true;player.LockPlayer=false;theme()
+ local sw,sh=getScreenResolution();local width=math.max(220,math.min(390,sw-32))
+ imgui.SetNextWindowPos(imgui.ImVec2(math.max(16,sw-width-20),math.max(20,math.floor(sh*0.24))),imgui.Cond.Always)
+ imgui.SetNextWindowSize(imgui.ImVec2(width,0),imgui.Cond.Always)
+ local flags=imgui.WindowFlags.NoTitleBar+imgui.WindowFlags.NoResize+imgui.WindowFlags.NoMove+imgui.WindowFlags.NoInputs+imgui.WindowFlags.NoFocusOnAppearing+imgui.WindowFlags.NoCollapse
+ if imgui.Begin('SHEVA_Helper###PaydayToast',nil,flags)then
+  imgui.TextColored(accent,t.kind=='item'and'Получен предмет / хранилище'or'Начисление');imgui.Separator();imgui.TextWrapped(t.text)
+ end
+ imgui.End()
+end)
+local function runMain()
+    boot:waitForSamp()
+    local function requestMenu()
+        if boot.mainError then boot:chat('Основной цикл остановлен. Пришли SHEVA_Helper-startup.log и перезапусти игру после исправления.');return end
+        if boot.initFailed then boot:chat('Ошибка инициализации mimgui. Пришли SHEVA_Helper-startup.log.');return end
+        boot.guiError=nil;opened[0]=true;tab=0
+        boot:record('menu-requested','/sheva requested root menu')
+        boot:chat('Открываю меню SHEVA_Helper.')
+    end
+    local menuCommand
+    if boot:command('sh',requestMenu)then menuCommand='sh'end
+    if boot:command('sheva',requestMenu)then menuCommand=menuCommand or'sheva'
+    elseif boot:command('shevahelper',requestMenu)then menuCommand='shevahelper'end
+    local diagCommand=boot:command('shevadiag',function()
+        boot:record('diagnostic','GUI initialized='..tostring(initialized)..'; GUI error='..tostring(boot.guiError)..'; main error='..tostring(boot.mainError))
+        exportDiagnostics()
+        boot:chat(feedback)
+    end)
+    registerArzAlias()
+    boot:chat('Скрипт загружен. Меню: '..(menuCommand and'/'..menuCommand..' или 'or'')..keyName()..'. Диагностика: '..(diagCommand and'/shevadiag'or'SHEVA_Helper-startup.log')..'.')
+    boot:record('startup-settings','Loading saved data')
+    if not doesDirectoryExist(root)then createDirectory(root)end
+    load();save();loadServerCache();loadLocalPrices();loadPlans();log('SHEVA_Helper '..releaseVersion..' startup');updateAccent();themeDirty=true
+    boot:run('payday-load',function()payday:poll()end)
+    boot:run('payday-hooks',installPaydayHooks)
+    boot:run('update-check',checkUpdates)
+    for _,m in ipairs(modules)do if cfg.enabled[m.id]~=false then boot:run('module-start-'..m.id,startModule,m)end end
+    local started=0;for _,m in ipairs(modules)do if findModule(m)then started=started+1 end end
+    say('Запущено потоков модулей: '..started..'/7. Меню: '..keyName()..'.')
+    boot:record('main-ready','Main loop ready; modules '..started..'/7')
+    local welcomePath=root..'/show_after_install.flag'
+    local welcomeFile=io.open(welcomePath,'rb')
+    local welcomeRequested=welcomeFile~=nil
+    if welcomeFile then welcomeFile:close()end
+    local welcomeStarted=os.time()
+    local last=false
+    while true do
+        wait(0)
+        priceArchive:poll()
+        pollServers()
+        pollUpdates()
+        if not payday.lastPoll or os.time()~=payday.lastPoll then payday.lastPoll=os.time();boot:run('payday-poll',function()payday:poll()end)end
+        boot:run('telegram-poll',function()telegram:poll();remoteReceiver:poll();remoteIntents:poll()end)
+        if host then
+            if opened[0] and tab>=1 and tab<=7 then host:prepare(modules[tab].id)
+            elseif host.selected then host:hide()end
+        end
+        local pending=deferred;deferred={}
+        for _,fn in ipairs(pending)do local ok,err=pcall(fn);if not ok then feedback='Ошибка действия: '..tostring(err);log(feedback)end end
+        local busy=sampIsChatInputActive()or sampIsDialogActive()or isPauseMenuActive()
+        local typing=opened[0]and boot.textInputActive
+        if welcomeRequested and not busy and os.time()-welcomeStarted>=5 then
+            local ready,playing=false,false
+            if type(isPlayerPlaying)=='function'and PLAYER_HANDLE~=nil then ready,playing=pcall(isPlayerPlaying,PLAYER_HANDLE)end
+            if ready and playing then
+                opened[0]=true;welcomeRequested=false;os.remove(welcomePath)
+            end
+        end
+        if opened[0]and not binding and not busy and not typing and isKeyJustPressed(27)then opened[0]=false end
+        if binding and not busy then
+            if isKeyJustPressed(27)then binding=false else
+                for key=32,254 do
+                    if not(key>=112 and key<=123)and key~=160 and key~=161 and key~=162 and key~=163 and key~=164 and key~=165 and isKeyJustPressed(key)then
+                        local ctrl,shift,alt=isKeyDown(17),isKeyDown(16),isKeyDown(18)
+                        if ctrl or shift or alt then cfg.key=key;cfg.ctrl=ctrl;cfg.shift=shift;cfg.alt=alt;save();feedback='Сочетание сохранено: '..keyName();binding=false;last=true;break end
+                    end
+                end
+            end
+        else
+            local held=isKeyDown(cfg.key)and(not cfg.ctrl or isKeyDown(17))and(not cfg.shift or isKeyDown(16))and(not cfg.alt or isKeyDown(18))
+            if held and not last and not busy and not typing then opened[0]=not opened[0]end
+            last=held
+        end
+    end
+end
+
+function main()
+    local ok,err=boot:run('main',runMain)
+    if not ok then
+        boot.mainError=err;opened[0]=false
+        boot:chat('Ошибка запуска SHEVA_Helper. Команда /shevadiag и журнал помогут определить причину.')
+        while true do wait(1000)end
+    end
+end
+boot:record('source-ready','Source initialized; waiting for main')
